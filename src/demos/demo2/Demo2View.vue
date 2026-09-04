@@ -3,7 +3,7 @@ import { computed, reactive, ref } from 'vue'
 import { Box, ChevronDown, Eye, EyeOff, Layers3, LocateFixed, Minus, Plus } from '@lucide/vue'
 import MapScene from './components/MapScene.vue'
 import type { MapViewState, ProtectAreaFeature, ProtectAreaType, SceneCommand } from './types/map'
-import { AREA_TYPE_STYLES, MAP_VIEW_CONFIG } from './map/config'
+import { AREA_TYPE_STYLES, MAP_VIEW_CONFIG } from './config'
 
 const status = ref<'loading' | 'ready' | 'error'>('loading')
 const statusMessage = ref('正在构建空间场景')

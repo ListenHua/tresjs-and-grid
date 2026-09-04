@@ -1,4 +1,4 @@
-import type { ProtectAreaType } from '../types/map'
+import type { ProtectAreaType } from './types/map'
 
 export const BASE_MAP_CONFIG = {
   id: 'base',
@@ -25,6 +25,21 @@ export const EXTRUSION_CONFIG = {
   opacity: 0.88,
 }
 
+export const RASTER_TOP_CONFIG = {
+  minZoom: 14,
+  maxZoom: 19,
+  debounce: 180,
+  overscanRatio: 0.15,
+  tileSize: 256,
+  paddingPixels: 1,
+  maxAtlasSize: 2048,
+  maxConcurrentRequests: 8,
+  maxAnisotropy: 8,
+  maxCachedAtlases: 32,
+  maxCachedTexturePixels: 12 * 1024 * 1024,
+  maxCachedImages: 256,
+}
+
 export const AREA_TYPE_STYLES: { type: ProtectAreaType; color: string }[] = [
   { type: '核心区', color: '#e35d3f' },
   { type: '缓冲区', color: '#56a68b' },
@@ -41,6 +56,8 @@ export const INTERACTION_COLORS = {
   hover: '#ffe08a',
   selected: '#c8ff8c',
   selectedEmissive: '#274b35',
+  rasterHoverTint: '#fff1d8',
+  rasterSelectedTint: '#e9ffdc',
 }
 
 export const THREE_LAYER_CONFIG = {

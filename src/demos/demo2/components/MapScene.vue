@@ -3,7 +3,7 @@ import { onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import * as maptalks from 'maptalks'
 import 'maptalks/dist/maptalks.css'
 import { useProtectAreaLayer } from '../hooks/useProtectAreaLayer'
-import { BASE_MAP_CONFIG, MAP_VIEW_CONFIG } from '../map/config'
+import { BASE_MAP_CONFIG, MAP_VIEW_CONFIG } from '../config'
 import type { MapViewState, ProtectAreaFeature, ProtectAreaType, SceneCommand } from '../types/map'
 
 const props = defineProps<{
