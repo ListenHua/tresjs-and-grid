@@ -62,6 +62,22 @@ interface AppliedRasterState {
   requestedZoom: number
 }
 
+export type ExtrusionPhase = 'flat' | 'raising' | 'raised' | 'lowering'
+
+export function resolveExtrusionRenderState(phase: ExtrusionPhase) {
+  const isRaisedTarget = phase === 'raising' || phase === 'raised'
+  const isVisible = phase !== 'flat'
+  return {
+    scaleZ: isRaisedTarget ? 1 : EXTRUSION_CONFIG.flatScale,
+    topOpacity: isRaisedTarget ? 1 : 0,
+    sideOpacity: isRaisedTarget ? EXTRUSION_CONFIG.opacity : 0,
+    topVisible: isVisible,
+    sideVisible: isVisible,
+    topTransparent: phase !== 'raised',
+    topDepthWrite: isVisible,
+  }
+}
+
 function intersectExtents(a: GeographicExtent, b: GeographicExtent): GeographicExtent | null {
   const extent = {
     west: Math.max(a.west, b.west),
@@ -237,6 +253,26 @@ export function useProtectAreaLayer(options: ProtectAreaLayerOptions) {
   const prefersReducedMotion = typeof window !== 'undefined'
     && window.matchMedia('(prefers-reduced-motion: reduce)').matches
 
+  function applyMaterialRenderState(
+    topMaterial: THREE.MeshBasicMaterial,
+    sideMaterial: THREE.MeshPhongMaterial,
+    phase: ExtrusionPhase,
+    applyOpacity: boolean,
+  ) {
+    const state = resolveExtrusionRenderState(phase)
+    const transparencyChanged = topMaterial.transparent !== state.topTransparent
+    topMaterial.transparent = state.topTransparent
+    topMaterial.depthWrite = state.topDepthWrite
+    topMaterial.visible = state.topVisible
+    sideMaterial.visible = state.sideVisible
+    if (applyOpacity) {
+      topMaterial.opacity = state.topOpacity
+      sideMaterial.opacity = state.sideOpacity
+    }
+    if (transparencyChanged) topMaterial.needsUpdate = true
+    return state
+  }
+
   function featureId(feature: ProtectAreaFeature, index: number) {
     return `${feature.properties.BHDBM}-${feature.properties.BHDLX}-${index}`
   }
@@ -272,13 +308,12 @@ export function useProtectAreaLayer(options: ProtectAreaLayerOptions) {
 
     extrusionAnimations.get(id)?.kill()
     extrusionAnimations.delete(id)
-    const scaleZ = raised ? 1 : EXTRUSION_CONFIG.flatScale
-    const topOpacity = raised ? 1 : 0
-    const sideOpacity = raised ? EXTRUSION_CONFIG.opacity : 0
+    const transitionPhase: ExtrusionPhase = raised ? 'raising' : 'lowering'
+    const settledPhase: ExtrusionPhase = raised ? 'raised' : 'flat'
+    const target = applyMaterialRenderState(topMaterial, sideMaterial, transitionPhase, false)
     if (immediate || prefersReducedMotion) {
-      gsap.set(object3d.scale, { z: scaleZ })
-      gsap.set(topMaterial, { opacity: topOpacity })
-      gsap.set(sideMaterial, { opacity: sideOpacity })
+      const settled = applyMaterialRenderState(topMaterial, sideMaterial, settledPhase, true)
+      object3d.scale.z = settled.scaleZ
       layer?.renderScene()
       return
     }
@@ -289,13 +324,16 @@ export function useProtectAreaLayer(options: ProtectAreaLayerOptions) {
       defaults: { duration, ease, overwrite: true },
       onUpdate: () => layer?.renderScene(),
       onComplete: () => {
-        if (extrusionAnimations.get(id) === timeline) extrusionAnimations.delete(id)
+        if (extrusionAnimations.get(id) !== timeline) return
+        applyMaterialRenderState(topMaterial, sideMaterial, settledPhase, true)
+        extrusionAnimations.delete(id)
+        layer?.renderScene()
       },
     })
     timeline
-      .to(object3d.scale, { z: scaleZ }, 0)
-      .to(topMaterial, { opacity: topOpacity }, 0)
-      .to(sideMaterial, { opacity: sideOpacity }, 0)
+      .to(object3d.scale, { z: target.scaleZ }, 0)
+      .to(topMaterial, { opacity: target.topOpacity }, 0)
+      .to(sideMaterial, { opacity: target.sideOpacity }, 0)
     extrusionAnimations.set(id, timeline)
   }
 
@@ -451,12 +489,14 @@ export function useProtectAreaLayer(options: ProtectAreaLayerOptions) {
       transparent: true,
       opacity: 0,
       depthWrite: false,
+      visible: false,
     })
     const topMaterial = new THREE.MeshBasicMaterial({
       color: AREA_TYPE_COLORS[feature.properties.BHDLX],
       transparent: true,
       opacity: 0,
       depthWrite: false,
+      visible: false,
       toneMapped: false,
     })
     const outlineMaterial = new THREE.LineBasicMaterial({
