@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { Box, Map } from '@lucide/vue'
+import { Blocks, Map } from '@lucide/vue'
 </script>
 
 <template>
@@ -8,8 +8,8 @@ import { Box, Map } from '@lucide/vue'
       <Map :size="15" aria-hidden="true" />
       <span>Demo 1</span>
     </RouterLink>
-    <RouterLink to="/demo2" title="查看网格实验 Demo">
-      <Box :size="15" aria-hidden="true" />
+    <RouterLink to="/demo2" title="查看三维区域规划 Demo">
+      <Blocks :size="15" aria-hidden="true" />
       <span>Demo 2</span>
     </RouterLink>
   </nav>
