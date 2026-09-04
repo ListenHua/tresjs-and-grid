@@ -2,6 +2,7 @@ import type { Ref } from 'vue'
 import * as maptalks from 'maptalks'
 import { ThreeLayer } from 'maptalks.three'
 import type BaseObject from 'maptalks.three/dist/BaseObject'
+import { gsap } from 'gsap'
 import * as THREE from 'three'
 import protectAreaJson from '../data/protect_area.json'
 import {
@@ -103,10 +104,54 @@ function isTopTriangle(
     && Math.abs(position.getZ(c) - topZ) <= epsilon
 }
 
+export function extractBoundaryEdgeIndices(topIndices: number[]) {
+  const edges = new Map<string, { a: number; b: number; count: number }>()
+  const addEdge = (a: number, b: number) => {
+    const key = a < b ? `${a}:${b}` : `${b}:${a}`
+    const existing = edges.get(key)
+    if (existing) existing.count += 1
+    else edges.set(key, { a, b, count: 1 })
+  }
+
+  for (let index = 0; index < topIndices.length; index += 3) {
+    const a = topIndices[index]
+    const b = topIndices[index + 1]
+    const c = topIndices[index + 2]
+    addEdge(a, b)
+    addEdge(b, c)
+    addEdge(c, a)
+  }
+
+  return [...edges.values()]
+    .filter(edge => edge.count === 1)
+    .flatMap(edge => [edge.a, edge.b])
+}
+
+function createTopOutline(
+  position: THREE.BufferAttribute | THREE.InterleavedBufferAttribute,
+  topIndices: number[],
+  material: THREE.LineBasicMaterial,
+) {
+  const boundaryIndices = extractBoundaryEdgeIndices(topIndices)
+  const outlinePositions = new Float32Array(boundaryIndices.length * 3)
+  boundaryIndices.forEach((vertexIndex, index) => {
+    outlinePositions[index * 3] = position.getX(vertexIndex)
+    outlinePositions[index * 3 + 1] = position.getY(vertexIndex)
+    outlinePositions[index * 3 + 2] = position.getZ(vertexIndex)
+  })
+  const geometry = new THREE.BufferGeometry()
+  geometry.setAttribute('position', new THREE.BufferAttribute(outlinePositions, 3))
+  const outline = new THREE.LineSegments(geometry, material)
+  outline.renderOrder = 2
+  outline.raycast = () => {}
+  return outline
+}
+
 function configureExtrudedMaterials(
   mesh: THREE.Mesh,
   topMaterial: THREE.Material,
   sideMaterial: THREE.Material,
+  outlineMaterial: THREE.LineBasicMaterial,
 ) {
   const geometry = mesh.geometry
   const position = geometry.getAttribute('position')
@@ -133,6 +178,9 @@ function configureExtrudedMaterials(
   geometry.addGroup(0, topIndices.length, 0)
   geometry.addGroup(topIndices.length, bodyIndices.length, 1)
   mesh.material = [topMaterial, sideMaterial]
+  const outline = createTopOutline(position, topIndices, outlineMaterial)
+  mesh.add(outline)
+  return outline
 }
 
 function applyRasterAtlasUv(mesh: THREE.Mesh, targetLayer: ThreeLayer, atlas: RasterAtlas) {
@@ -166,6 +214,9 @@ export function useProtectAreaLayer(options: ProtectAreaLayerOptions) {
   const meshes = new Map<string, BaseObject>()
   const sideMaterials = new Map<string, THREE.MeshPhongMaterial>()
   const topMaterials = new Map<string, THREE.MeshBasicMaterial>()
+  const outlineMaterials = new Map<string, THREE.LineBasicMaterial>()
+  const outlineLines = new Map<string, THREE.LineSegments>()
+  const extrusionAnimations = new Map<string, gsap.core.Timeline>()
   const featureById = new Map<string, ProtectAreaFeature>()
   const rasterRequestIds = new Map<string, number>()
   const pendingRasterRequests = new Map<string, RasterRequestState>()
@@ -180,6 +231,11 @@ export function useProtectAreaLayer(options: ProtectAreaLayerOptions) {
   let rasterPrioritySequence = 0
   let rebuildTimer: ReturnType<typeof setTimeout> | undefined
   let detailTimer: ReturnType<typeof setTimeout> | undefined
+  let hoverExitTimer: ReturnType<typeof setTimeout> | undefined
+  const supportsHover = typeof window === 'undefined'
+    || window.matchMedia('(hover: hover) and (pointer: fine)').matches
+  const prefersReducedMotion = typeof window !== 'undefined'
+    && window.matchMedia('(prefers-reduced-motion: reduce)').matches
 
   function featureId(feature: ProtectAreaFeature, index: number) {
     return `${feature.properties.BHDBM}-${feature.properties.BHDLX}-${index}`
@@ -188,14 +244,17 @@ export function useProtectAreaLayer(options: ProtectAreaLayerOptions) {
   function updateMaterial(id: string) {
     const sideMaterial = sideMaterials.get(id)
     const topMaterial = topMaterials.get(id)
+    const outlineMaterial = outlineMaterials.get(id)
     const feature = featureById.get(id)
-    if (!sideMaterial || !topMaterial || !feature) return
+    if (!sideMaterial || !topMaterial || !outlineMaterial || !feature) return
     const color = id === selectedId
       ? INTERACTION_COLORS.selected
-      : id === hoveredId ? INTERACTION_COLORS.hover : AREA_TYPE_COLORS[feature.properties.BHDLX]
+      : AREA_TYPE_COLORS[feature.properties.BHDLX]
     sideMaterial.color.set(color)
     sideMaterial.emissive.set(id === selectedId ? INTERACTION_COLORS.selectedEmissive : '#000000')
     sideMaterial.needsUpdate = true
+    outlineMaterial.color.set(color)
+    outlineMaterial.needsUpdate = true
     topMaterial.color.set(topMaterial.map
       ? id === selectedId
         ? INTERACTION_COLORS.rasterSelectedTint
@@ -205,6 +264,41 @@ export function useProtectAreaLayer(options: ProtectAreaLayerOptions) {
     layer?.renderScene()
   }
 
+  function setMeshRaised(id: string, raised: boolean, immediate = false) {
+    const object3d = meshes.get(id)?.getObject3d()
+    const sideMaterial = sideMaterials.get(id)
+    const topMaterial = topMaterials.get(id)
+    if (!(object3d instanceof THREE.Mesh) || !sideMaterial || !topMaterial) return
+
+    extrusionAnimations.get(id)?.kill()
+    extrusionAnimations.delete(id)
+    const scaleZ = raised ? 1 : EXTRUSION_CONFIG.flatScale
+    const topOpacity = raised ? 1 : 0
+    const sideOpacity = raised ? EXTRUSION_CONFIG.opacity : 0
+    if (immediate || prefersReducedMotion) {
+      gsap.set(object3d.scale, { z: scaleZ })
+      gsap.set(topMaterial, { opacity: topOpacity })
+      gsap.set(sideMaterial, { opacity: sideOpacity })
+      layer?.renderScene()
+      return
+    }
+
+    const duration = raised ? EXTRUSION_CONFIG.raiseDuration : EXTRUSION_CONFIG.lowerDuration
+    const ease = raised ? EXTRUSION_CONFIG.raiseEase : EXTRUSION_CONFIG.lowerEase
+    const timeline = gsap.timeline({
+      defaults: { duration, ease, overwrite: true },
+      onUpdate: () => layer?.renderScene(),
+      onComplete: () => {
+        if (extrusionAnimations.get(id) === timeline) extrusionAnimations.delete(id)
+      },
+    })
+    timeline
+      .to(object3d.scale, { z: scaleZ }, 0)
+      .to(topMaterial, { opacity: topOpacity }, 0)
+      .to(sideMaterial, { opacity: sideOpacity }, 0)
+    extrusionAnimations.set(id, timeline)
+  }
+
   function setSelection(feature: ProtectAreaFeature | null) {
     const previous = selectedId
     selectedId = feature
@@ -212,6 +306,10 @@ export function useProtectAreaLayer(options: ProtectAreaLayerOptions) {
       : null
     if (previous) updateMaterial(previous)
     if (selectedId) updateMaterial(selectedId)
+    if (!supportsHover) {
+      if (previous && previous !== selectedId) setMeshRaised(previous, false)
+      if (selectedId) setMeshRaised(selectedId, true)
+    }
     options.onSelect(feature)
   }
 
@@ -351,10 +449,22 @@ export function useProtectAreaLayer(options: ProtectAreaLayerOptions) {
       color: AREA_TYPE_COLORS[feature.properties.BHDLX],
       shininess: EXTRUSION_CONFIG.shininess,
       transparent: true,
-      opacity: EXTRUSION_CONFIG.opacity,
+      opacity: 0,
+      depthWrite: false,
     })
     const topMaterial = new THREE.MeshBasicMaterial({
       color: AREA_TYPE_COLORS[feature.properties.BHDLX],
+      transparent: true,
+      opacity: 0,
+      depthWrite: false,
+      toneMapped: false,
+    })
+    const outlineMaterial = new THREE.LineBasicMaterial({
+      color: AREA_TYPE_COLORS[feature.properties.BHDLX],
+      transparent: true,
+      opacity: EXTRUSION_CONFIG.outlineOpacity,
+      depthTest: false,
+      depthWrite: false,
       toneMapped: false,
     })
     const mesh = layer.toExtrudePolygon(geometry, {
@@ -365,33 +475,59 @@ export function useProtectAreaLayer(options: ProtectAreaLayerOptions) {
     if (!(object3d instanceof THREE.Mesh)) {
       sideMaterial.dispose()
       topMaterial.dispose()
+      outlineMaterial.dispose()
       return
     }
-    configureExtrudedMaterials(object3d, topMaterial, sideMaterial)
+    const outline = configureExtrudedMaterials(
+      object3d,
+      topMaterial,
+      sideMaterial,
+      outlineMaterial,
+    )
+    object3d.scale.z = EXTRUSION_CONFIG.flatScale
     mesh.setId(id).setProperties(feature.properties)
     mesh.on('mouseover', () => {
+      if (!supportsHover) return
+      clearTimeout(hoverExitTimer)
+      if (hoveredId === id) return
       const previous = hoveredId
       hoveredId = id
-      if (previous && previous !== selectedId) updateMaterial(previous)
+      if (previous) {
+        setMeshRaised(previous, false)
+        updateMaterial(previous)
+      }
       updateMaterial(id)
+      setMeshRaised(id, true)
+      refreshRasterTextures()
       options.container.value?.classList.add('is-picking')
       options.onHover(feature)
     })
     mesh.on('mouseout', () => {
-      hoveredId = null
-      updateMaterial(id)
-      options.container.value?.classList.remove('is-picking')
-      options.onHover(null)
+      if (!supportsHover) return
+      clearTimeout(hoverExitTimer)
+      hoverExitTimer = setTimeout(() => {
+        if (hoveredId !== id) return
+        hoveredId = null
+        setMeshRaised(id, false)
+        updateMaterial(id)
+        options.container.value?.classList.remove('is-picking')
+        options.onHover(null)
+      }, EXTRUSION_CONFIG.hoverExitDelay)
     })
     mesh.on('click', () => setSelection(selectedId === id ? null : feature))
     featureById.set(id, feature)
     sideMaterials.set(id, sideMaterial)
     topMaterials.set(id, topMaterial)
+    outlineMaterials.set(id, outlineMaterial)
+    outlineLines.set(id, outline)
     meshes.set(id, mesh)
     layer.addMesh(mesh)
   }
 
   function disposeMeshes() {
+    clearTimeout(hoverExitTimer)
+    extrusionAnimations.forEach(animation => animation.kill())
+    extrusionAnimations.clear()
     appliedRasterStates.forEach(({ atlas }) => atlasManager?.releaseAtlas(atlas))
     meshes.forEach(mesh => {
       layer?.removeMesh(mesh)
@@ -399,11 +535,15 @@ export function useProtectAreaLayer(options: ProtectAreaLayerOptions) {
         if (object instanceof THREE.Mesh) object.geometry?.dispose()
       })
     })
+    outlineLines.forEach(outline => outline.geometry.dispose())
     sideMaterials.forEach(material => material.dispose())
     topMaterials.forEach(material => material.dispose())
+    outlineMaterials.forEach(material => material.dispose())
     meshes.clear()
     sideMaterials.clear()
     topMaterials.clear()
+    outlineMaterials.clear()
+    outlineLines.clear()
     featureById.clear()
     rasterRequestIds.clear()
     pendingRasterRequests.clear()
@@ -415,6 +555,7 @@ export function useProtectAreaLayer(options: ProtectAreaLayerOptions) {
     rebuildRevision += 1
     selectedId = null
     hoveredId = null
+    options.container.value?.classList.remove('is-picking')
     options.onSelect(null)
     options.onHover(null)
     disposeMeshes()
@@ -470,8 +611,21 @@ export function useProtectAreaLayer(options: ProtectAreaLayerOptions) {
   }
 
   function setVisible(visible: boolean) {
-    if (visible) layer?.show()
-    else layer?.hide()
+    if (visible) {
+      layer?.show()
+      return
+    }
+
+    clearTimeout(hoverExitTimer)
+    if (hoveredId) {
+      const previous = hoveredId
+      hoveredId = null
+      setMeshRaised(previous, false, true)
+      updateMaterial(previous)
+      options.onHover(null)
+    }
+    options.container.value?.classList.remove('is-picking')
+    layer?.hide()
   }
 
   function clearSelection() {
@@ -481,6 +635,7 @@ export function useProtectAreaLayer(options: ProtectAreaLayerOptions) {
   function dispose() {
     clearTimeout(rebuildTimer)
     clearTimeout(detailTimer)
+    clearTimeout(hoverExitTimer)
     rebuildRevision += 1
     mapInstance?.off('zoomend moveend', scheduleRasterRefresh)
     mapInstance = null

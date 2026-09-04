@@ -23,6 +23,13 @@ export const EXTRUSION_CONFIG = {
   height: 120,
   shininess: 14,
   opacity: 0.88,
+  flatScale: 0.001,
+  outlineOpacity: 0.92,
+  raiseDuration: 0.22,
+  lowerDuration: 0.16,
+  raiseEase: 'power3.out',
+  lowerEase: 'power2.out',
+  hoverExitDelay: 40,
 }
 
 export const RASTER_TOP_CONFIG = {
@@ -53,7 +60,6 @@ export const AREA_TYPE_COLORS = Object.fromEntries(
 ) as Record<ProtectAreaType, string>
 
 export const INTERACTION_COLORS = {
-  hover: '#ffe08a',
   selected: '#c8ff8c',
   selectedEmissive: '#274b35',
   rasterHoverTint: '#fff1d8',
