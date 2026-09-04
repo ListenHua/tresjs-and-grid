@@ -17,7 +17,7 @@ const router = createRouter({
       path: '/demo2',
       name: 'demo2',
       component: () => import('../demos/demo2/Demo2View.vue'),
-      meta: { title: 'Demo 2 - 三维区域规划' },
+      meta: { title: 'Demo 2 - 广西原生境保护区' },
     },
     {
       path: '/:pathMatch(.*)*',
