@@ -68,4 +68,3 @@ export function normalizeTileX(x: number, z: number) {
   const count = 2 ** z
   return ((x % count) + count) % count
 }
-
