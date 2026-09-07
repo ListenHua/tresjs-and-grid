@@ -1,10 +1,5 @@
-<script setup lang="ts">
-import DemoSwitcher from './components/DemoSwitcher.vue'
-</script>
-
 <template>
   <RouterView />
-  <DemoSwitcher />
 </template>
 
 <style>

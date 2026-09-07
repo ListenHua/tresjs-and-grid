@@ -24,6 +24,8 @@ export const EXTRUSION_CONFIG = {
   shininess: 14,
   opacity: 0.88,
   flatScale: 0.001,
+  fillOpacity: 0.6,
+  fillInsetRatio: 0.0005,
   outlineOpacity: 0.92,
   outlineLiftRatio: 0.001,
   raiseDuration: 0.22,
@@ -59,6 +61,14 @@ export const AREA_TYPE_STYLES: { type: ProtectAreaType; color: string }[] = [
 export const AREA_TYPE_COLORS = Object.fromEntries(
   AREA_TYPE_STYLES.map(item => [item.type, item.color]),
 ) as Record<ProtectAreaType, string>
+
+export const AREA_TYPE_FILL_ORDER: Record<ProtectAreaType, number> = {
+  '缓冲区': -10,
+  '核心区': -9,
+  '试验区': -8,
+  '实验区': -8,
+  '抢救园': -7,
+}
 
 export const INTERACTION_COLORS = {
   selected: '#c8ff8c',

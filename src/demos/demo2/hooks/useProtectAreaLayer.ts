@@ -7,6 +7,7 @@ import * as THREE from 'three'
 import protectAreaJson from '../data/protect_area.json'
 import {
   AREA_TYPE_COLORS,
+  AREA_TYPE_FILL_ORDER,
   BASE_MAP_CONFIG,
   EXTRUSION_CONFIG,
   INTERACTION_COLORS,
@@ -67,12 +68,15 @@ export type ExtrusionPhase = 'flat' | 'raising' | 'raised' | 'lowering'
 export function resolveExtrusionRenderState(phase: ExtrusionPhase) {
   const isRaisedTarget = phase === 'raising' || phase === 'raised'
   const isVisible = phase !== 'flat'
+  const fillVisible = phase !== 'raised'
   return {
     scaleZ: isRaisedTarget ? 1 : EXTRUSION_CONFIG.flatScale,
     topOpacity: isRaisedTarget ? 1 : 0,
     sideOpacity: isRaisedTarget ? EXTRUSION_CONFIG.opacity : 0,
+    fillOpacity: phase === 'flat' || phase === 'lowering' ? EXTRUSION_CONFIG.fillOpacity : 0,
     topVisible: isVisible,
     sideVisible: isVisible,
+    fillVisible,
     topTransparent: phase !== 'raised',
     topDepthWrite: isVisible,
     sideDepthWrite: isVisible,
@@ -153,6 +157,35 @@ export function resolveOutlineRenderState(topZ: number) {
   }
 }
 
+function copyVertexPositions(
+  position: THREE.BufferAttribute | THREE.InterleavedBufferAttribute,
+  indices: number[],
+) {
+  const positions = new Float32Array(indices.length * 3)
+  indices.forEach((vertexIndex, index) => {
+    positions[index * 3] = position.getX(vertexIndex)
+    positions[index * 3 + 1] = position.getY(vertexIndex)
+    positions[index * 3 + 2] = position.getZ(vertexIndex)
+  })
+  return positions
+}
+
+function createTopFill(
+  position: THREE.BufferAttribute | THREE.InterleavedBufferAttribute,
+  topIndices: number[],
+  topZ: number,
+  material: THREE.MeshBasicMaterial,
+  renderOrder: number,
+) {
+  const geometry = new THREE.BufferGeometry()
+  geometry.setAttribute('position', new THREE.BufferAttribute(copyVertexPositions(position, topIndices), 3))
+  const fill = new THREE.Mesh(geometry, material)
+  fill.position.z = -Math.abs(topZ) * EXTRUSION_CONFIG.fillInsetRatio
+  fill.renderOrder = renderOrder
+  fill.raycast = () => {}
+  return fill
+}
+
 function createTopOutline(
   position: THREE.BufferAttribute | THREE.InterleavedBufferAttribute,
   topIndices: number[],
@@ -160,14 +193,8 @@ function createTopOutline(
   material: THREE.LineBasicMaterial,
 ) {
   const boundaryIndices = extractBoundaryEdgeIndices(topIndices)
-  const outlinePositions = new Float32Array(boundaryIndices.length * 3)
-  boundaryIndices.forEach((vertexIndex, index) => {
-    outlinePositions[index * 3] = position.getX(vertexIndex)
-    outlinePositions[index * 3 + 1] = position.getY(vertexIndex)
-    outlinePositions[index * 3 + 2] = position.getZ(vertexIndex)
-  })
   const geometry = new THREE.BufferGeometry()
-  geometry.setAttribute('position', new THREE.BufferAttribute(outlinePositions, 3))
+  geometry.setAttribute('position', new THREE.BufferAttribute(copyVertexPositions(position, boundaryIndices), 3))
   const outline = new THREE.LineSegments(geometry, material)
   const renderState = resolveOutlineRenderState(topZ)
   material.depthTest = renderState.depthTest
@@ -182,6 +209,8 @@ function configureExtrudedMaterials(
   mesh: THREE.Mesh,
   topMaterial: THREE.Material,
   sideMaterial: THREE.Material,
+  fillMaterial: THREE.MeshBasicMaterial,
+  fillRenderOrder: number,
   outlineMaterial: THREE.LineBasicMaterial,
 ) {
   const geometry = mesh.geometry
@@ -209,9 +238,10 @@ function configureExtrudedMaterials(
   geometry.addGroup(0, topIndices.length, 0)
   geometry.addGroup(topIndices.length, bodyIndices.length, 1)
   mesh.material = [topMaterial, sideMaterial]
+  const fill = createTopFill(position, topIndices, topZ, fillMaterial, fillRenderOrder)
   const outline = createTopOutline(position, topIndices, topZ, outlineMaterial)
-  mesh.add(outline)
-  return outline
+  mesh.add(fill, outline)
+  return { fill, outline }
 }
 
 function applyRasterAtlasUv(mesh: THREE.Mesh, targetLayer: ThreeLayer, atlas: RasterAtlas) {
@@ -245,6 +275,7 @@ export function useProtectAreaLayer(options: ProtectAreaLayerOptions) {
   const meshes = new Map<string, BaseObject>()
   const sideMaterials = new Map<string, THREE.MeshPhongMaterial>()
   const topMaterials = new Map<string, THREE.MeshBasicMaterial>()
+  const fillMaterials = new Map<string, THREE.MeshBasicMaterial>()
   const outlineMaterials = new Map<string, THREE.LineBasicMaterial>()
   const outlineLines = new Map<string, THREE.LineSegments>()
   const extrusionAnimations = new Map<string, gsap.core.Timeline>()
@@ -271,6 +302,7 @@ export function useProtectAreaLayer(options: ProtectAreaLayerOptions) {
   function applyMaterialRenderState(
     topMaterial: THREE.MeshBasicMaterial,
     sideMaterial: THREE.MeshPhongMaterial,
+    fillMaterial: THREE.MeshBasicMaterial,
     phase: ExtrusionPhase,
     applyOpacity: boolean,
   ) {
@@ -281,9 +313,11 @@ export function useProtectAreaLayer(options: ProtectAreaLayerOptions) {
     topMaterial.visible = state.topVisible
     sideMaterial.depthWrite = state.sideDepthWrite
     sideMaterial.visible = state.sideVisible
+    fillMaterial.visible = state.fillVisible
     if (applyOpacity) {
       topMaterial.opacity = state.topOpacity
       sideMaterial.opacity = state.sideOpacity
+      fillMaterial.opacity = state.fillOpacity
     }
     if (transparencyChanged) topMaterial.needsUpdate = true
     return state
@@ -320,15 +354,16 @@ export function useProtectAreaLayer(options: ProtectAreaLayerOptions) {
     const object3d = meshes.get(id)?.getObject3d()
     const sideMaterial = sideMaterials.get(id)
     const topMaterial = topMaterials.get(id)
-    if (!(object3d instanceof THREE.Mesh) || !sideMaterial || !topMaterial) return
+    const fillMaterial = fillMaterials.get(id)
+    if (!(object3d instanceof THREE.Mesh) || !sideMaterial || !topMaterial || !fillMaterial) return
 
     extrusionAnimations.get(id)?.kill()
     extrusionAnimations.delete(id)
     const transitionPhase: ExtrusionPhase = raised ? 'raising' : 'lowering'
     const settledPhase: ExtrusionPhase = raised ? 'raised' : 'flat'
-    const target = applyMaterialRenderState(topMaterial, sideMaterial, transitionPhase, false)
+    const target = applyMaterialRenderState(topMaterial, sideMaterial, fillMaterial, transitionPhase, false)
     if (immediate || prefersReducedMotion) {
-      const settled = applyMaterialRenderState(topMaterial, sideMaterial, settledPhase, true)
+      const settled = applyMaterialRenderState(topMaterial, sideMaterial, fillMaterial, settledPhase, true)
       object3d.scale.z = settled.scaleZ
       layer?.renderScene()
       return
@@ -341,7 +376,7 @@ export function useProtectAreaLayer(options: ProtectAreaLayerOptions) {
       onUpdate: () => layer?.renderScene(),
       onComplete: () => {
         if (extrusionAnimations.get(id) !== timeline) return
-        applyMaterialRenderState(topMaterial, sideMaterial, settledPhase, true)
+        applyMaterialRenderState(topMaterial, sideMaterial, fillMaterial, settledPhase, true)
         extrusionAnimations.delete(id)
         layer?.renderScene()
       },
@@ -350,6 +385,7 @@ export function useProtectAreaLayer(options: ProtectAreaLayerOptions) {
       .to(object3d.scale, { z: target.scaleZ }, 0)
       .to(topMaterial, { opacity: target.topOpacity }, 0)
       .to(sideMaterial, { opacity: target.sideOpacity }, 0)
+      .to(fillMaterial, { opacity: target.fillOpacity }, 0)
     extrusionAnimations.set(id, timeline)
   }
 
@@ -515,6 +551,14 @@ export function useProtectAreaLayer(options: ProtectAreaLayerOptions) {
       visible: false,
       toneMapped: false,
     })
+    const fillMaterial = new THREE.MeshBasicMaterial({
+      color: AREA_TYPE_COLORS[feature.properties.BHDLX],
+      transparent: true,
+      opacity: EXTRUSION_CONFIG.fillOpacity,
+      depthTest: true,
+      depthWrite: false,
+      toneMapped: false,
+    })
     const outlineMaterial = new THREE.LineBasicMaterial({
       color: AREA_TYPE_COLORS[feature.properties.BHDLX],
       transparent: true,
@@ -529,13 +573,16 @@ export function useProtectAreaLayer(options: ProtectAreaLayerOptions) {
     if (!(object3d instanceof THREE.Mesh)) {
       sideMaterial.dispose()
       topMaterial.dispose()
+      fillMaterial.dispose()
       outlineMaterial.dispose()
       return
     }
-    const outline = configureExtrudedMaterials(
+    const { outline } = configureExtrudedMaterials(
       object3d,
       topMaterial,
       sideMaterial,
+      fillMaterial,
+      AREA_TYPE_FILL_ORDER[feature.properties.BHDLX],
       outlineMaterial,
     )
     object3d.scale.z = EXTRUSION_CONFIG.flatScale
@@ -572,6 +619,7 @@ export function useProtectAreaLayer(options: ProtectAreaLayerOptions) {
     featureById.set(id, feature)
     sideMaterials.set(id, sideMaterial)
     topMaterials.set(id, topMaterial)
+    fillMaterials.set(id, fillMaterial)
     outlineMaterials.set(id, outlineMaterial)
     outlineLines.set(id, outline)
     meshes.set(id, mesh)
@@ -592,10 +640,12 @@ export function useProtectAreaLayer(options: ProtectAreaLayerOptions) {
     outlineLines.forEach(outline => outline.geometry.dispose())
     sideMaterials.forEach(material => material.dispose())
     topMaterials.forEach(material => material.dispose())
+    fillMaterials.forEach(material => material.dispose())
     outlineMaterials.forEach(material => material.dispose())
     meshes.clear()
     sideMaterials.clear()
     topMaterials.clear()
+    fillMaterials.clear()
     outlineMaterials.clear()
     outlineLines.clear()
     featureById.clear()
