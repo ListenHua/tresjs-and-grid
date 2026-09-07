@@ -6,12 +6,8 @@ const router = createRouter({
     {
       path: '/',
       name: 'main',
-      component: () => import('../demos/demo2/Demo2View.vue'),
+      component: () => import('../views/ProtectAreaView.vue'),
       meta: { title: '广西原生境保护区' },
-    },
-    {
-      path: '/demo2',
-      redirect: '/',
     },
     {
       path: '/:pathMatch(.*)*',
