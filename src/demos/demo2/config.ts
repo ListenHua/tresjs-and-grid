@@ -20,11 +20,12 @@ export const MAP_VIEW_CONFIG = {
 }
 
 export const EXTRUSION_CONFIG = {
-  height: 120,
+  height: 80,
   shininess: 14,
   opacity: 0.88,
   flatScale: 0.001,
   outlineOpacity: 0.92,
+  outlineLiftRatio: 0.001,
   raiseDuration: 0.22,
   lowerDuration: 0.16,
   raiseEase: 'power3.out',

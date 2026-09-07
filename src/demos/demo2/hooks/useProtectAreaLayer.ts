@@ -75,6 +75,7 @@ export function resolveExtrusionRenderState(phase: ExtrusionPhase) {
     sideVisible: isVisible,
     topTransparent: phase !== 'raised',
     topDepthWrite: isVisible,
+    sideDepthWrite: isVisible,
   }
 }
 
@@ -143,9 +144,19 @@ export function extractBoundaryEdgeIndices(topIndices: number[]) {
     .flatMap(edge => [edge.a, edge.b])
 }
 
+export function resolveOutlineRenderState(topZ: number) {
+  return {
+    depthTest: true,
+    depthWrite: false,
+    renderOrder: 2,
+    zOffset: Math.abs(topZ) * EXTRUSION_CONFIG.outlineLiftRatio,
+  }
+}
+
 function createTopOutline(
   position: THREE.BufferAttribute | THREE.InterleavedBufferAttribute,
   topIndices: number[],
+  topZ: number,
   material: THREE.LineBasicMaterial,
 ) {
   const boundaryIndices = extractBoundaryEdgeIndices(topIndices)
@@ -158,7 +169,11 @@ function createTopOutline(
   const geometry = new THREE.BufferGeometry()
   geometry.setAttribute('position', new THREE.BufferAttribute(outlinePositions, 3))
   const outline = new THREE.LineSegments(geometry, material)
-  outline.renderOrder = 2
+  const renderState = resolveOutlineRenderState(topZ)
+  material.depthTest = renderState.depthTest
+  material.depthWrite = renderState.depthWrite
+  outline.renderOrder = renderState.renderOrder
+  outline.position.z = renderState.zOffset
   outline.raycast = () => {}
   return outline
 }
@@ -194,7 +209,7 @@ function configureExtrudedMaterials(
   geometry.addGroup(0, topIndices.length, 0)
   geometry.addGroup(topIndices.length, bodyIndices.length, 1)
   mesh.material = [topMaterial, sideMaterial]
-  const outline = createTopOutline(position, topIndices, outlineMaterial)
+  const outline = createTopOutline(position, topIndices, topZ, outlineMaterial)
   mesh.add(outline)
   return outline
 }
@@ -264,6 +279,7 @@ export function useProtectAreaLayer(options: ProtectAreaLayerOptions) {
     topMaterial.transparent = state.topTransparent
     topMaterial.depthWrite = state.topDepthWrite
     topMaterial.visible = state.topVisible
+    sideMaterial.depthWrite = state.sideDepthWrite
     sideMaterial.visible = state.sideVisible
     if (applyOpacity) {
       topMaterial.opacity = state.topOpacity
@@ -503,8 +519,6 @@ export function useProtectAreaLayer(options: ProtectAreaLayerOptions) {
       color: AREA_TYPE_COLORS[feature.properties.BHDLX],
       transparent: true,
       opacity: EXTRUSION_CONFIG.outlineOpacity,
-      depthTest: false,
-      depthWrite: false,
       toneMapped: false,
     })
     const mesh = layer.toExtrudePolygon(geometry, {
