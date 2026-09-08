@@ -8,7 +8,7 @@ import protectAreaJson from '../data/protect_area.json'
 import {
   AREA_TYPE_COLORS,
   AREA_TYPE_FILL_ORDER,
-  BASE_MAP_CONFIG,
+  RASTER_SOURCE_CONFIG,
   EXTRUSION_CONFIG,
   INTERACTION_COLORS,
   LIGHT_CONFIG,
@@ -389,16 +389,19 @@ export function useProtectAreaLayer(options: ProtectAreaLayerOptions) {
     extrusionAnimations.set(id, timeline)
   }
 
-  function setSelection(feature: ProtectAreaFeature | null) {
+  function setSelection(feature: ProtectAreaFeature | null, immediate = false) {
     const previous = selectedId
     selectedId = feature
       ? [...featureById.entries()].find(([, value]) => value === feature)?.[0] ?? null
       : null
-    if (previous) updateMaterial(previous)
-    if (selectedId) updateMaterial(selectedId)
-    if (!supportsHover) {
-      if (previous && previous !== selectedId) setMeshRaised(previous, false)
-      if (selectedId) setMeshRaised(selectedId, true)
+    if (previous && previous !== selectedId) {
+      updateMaterial(previous)
+      setMeshRaised(previous, previous === hoveredId, immediate)
+    }
+    if (selectedId) {
+      updateMaterial(selectedId)
+      setMeshRaised(selectedId, true, immediate)
+      refreshRasterTextures()
     }
     options.onSelect(feature)
   }
@@ -594,11 +597,11 @@ export function useProtectAreaLayer(options: ProtectAreaLayerOptions) {
       const previous = hoveredId
       hoveredId = id
       if (previous) {
-        setMeshRaised(previous, false)
+        if (previous !== selectedId) setMeshRaised(previous, false)
         updateMaterial(previous)
       }
       updateMaterial(id)
-      setMeshRaised(id, true)
+      if (id !== selectedId) setMeshRaised(id, true)
       refreshRasterTextures()
       options.container.value?.classList.add('is-picking')
       options.onHover(feature)
@@ -609,7 +612,7 @@ export function useProtectAreaLayer(options: ProtectAreaLayerOptions) {
       hoverExitTimer = setTimeout(() => {
         if (hoveredId !== id) return
         hoveredId = null
-        setMeshRaised(id, false)
+        if (id !== selectedId) setMeshRaised(id, false)
         updateMaterial(id)
         options.container.value?.classList.remove('is-picking')
         options.onHover(null)
@@ -656,14 +659,17 @@ export function useProtectAreaLayer(options: ProtectAreaLayerOptions) {
 
   function rebuild() {
     if (!layer) return
+    const selectedFeature = selectedId ? featureById.get(selectedId) : null
     rebuildRevision += 1
     selectedId = null
     hoveredId = null
     options.container.value?.classList.remove('is-picking')
-    options.onSelect(null)
     options.onHover(null)
     disposeMeshes()
     PROTECT_AREAS.features.forEach(createMesh)
+    setSelection(selectedFeature && options.getVisibleTypes().includes(selectedFeature.properties.BHDLX)
+      ? selectedFeature
+      : null, true)
     scheduleRasterRefresh()
   }
 
@@ -680,8 +686,8 @@ export function useProtectAreaLayer(options: ProtectAreaLayerOptions) {
       const renderer = layer?.getThreeRenderer()
       const supportedAnisotropy = renderer?.capabilities.getMaxAnisotropy() ?? 1
       atlasManager = new RasterAtlasManager({
-        urlTemplate: BASE_MAP_CONFIG.urlTemplate,
-        crossOrigin: BASE_MAP_CONFIG.crossOrigin,
+        urlTemplate: RASTER_SOURCE_CONFIG.urlTemplate,
+        crossOrigin: RASTER_SOURCE_CONFIG.crossOrigin,
         tileSize: RASTER_TOP_CONFIG.tileSize,
         paddingPixels: RASTER_TOP_CONFIG.paddingPixels,
         maxAtlasSize: RASTER_TOP_CONFIG.maxAtlasSize,
@@ -729,6 +735,7 @@ export function useProtectAreaLayer(options: ProtectAreaLayerOptions) {
       options.onHover(null)
     }
     options.container.value?.classList.remove('is-picking')
+    setSelection(null, true)
     layer?.hide()
   }
 

@@ -1,11 +1,36 @@
-import type { ProtectAreaType } from './types/map'
+import type { BaseMapConfig, ProtectAreaType } from './types/map'
 
-export const BASE_MAP_CONFIG = {
-  id: 'base',
+export const RASTER_SOURCE_CONFIG = {
   urlTemplate: 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
   attribution: 'Tiles © Esri',
   crossOrigin: 'anonymous',
 }
+
+export const BASE_MAPS: BaseMapConfig[] = [
+  {
+    id: 'satellite',
+    name: '卫星影像',
+    description: 'Esri · 地表影像',
+    options: { ...RASTER_SOURCE_CONFIG },
+  },
+  {
+    id: 'streets',
+    name: '街道地图',
+    description: 'OpenStreetMap · 道路与地名',
+    options: {
+      urlTemplate: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
+      attribution: '© <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener noreferrer">OpenStreetMap</a> contributors',
+      crossOrigin: 'anonymous',
+      maxAvailableZoom: 19,
+    },
+  },
+  {
+    id: 'none',
+    name: '无底图',
+    description: '仅展示保护区图层',
+    options: null,
+  },
+]
 
 export const MAP_VIEW_CONFIG = {
   center: [108.32, 23.75] as [number, number],

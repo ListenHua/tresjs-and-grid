@@ -1,3 +1,12 @@
+import type { TileLayerOptionsType } from 'maptalks'
+
+export interface BaseMapConfig {
+  id: string
+  name: string
+  description?: string
+  options: TileLayerOptionsType | null
+}
+
 export type ProtectAreaType = '核心区' | '缓冲区' | '抢救园' | '试验区' | '实验区'
 
 export interface ProtectAreaProperties {
@@ -39,4 +48,4 @@ export interface MapViewState {
   bearing: number
 }
 
-export type SceneCommand = 'zoom-in' | 'zoom-out' | 'reset' | 'toggle-dimension'
+export type SceneCommand = 'zoom-in' | 'zoom-out' | 'reset' | 'set-2d' | 'set-3d'
