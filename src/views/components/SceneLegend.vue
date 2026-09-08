@@ -37,7 +37,7 @@ const expanded = ref(true)
           <Check v-if="regionsVisible && visibleTypes.includes(item.type)" :size="12" />
         </button>
       </div>
-      <p class="scene-state" :class="status" role="status"><i></i>{{ statusMessage }}</p>
+      <p v-if="status !== 'ready'" class="scene-state" :class="status" role="status"><i></i>{{ statusMessage }}</p>
     </div>
   </aside>
 </template>
@@ -62,7 +62,7 @@ button[aria-checked="false"] { opacity:.45 }
 .area-types button:disabled { cursor:not-allowed }
 .scene-state { display:flex;align-items:center;gap:7px;margin:0;padding:9px 13px;border-top:1px solid rgba(242,240,233,.09);color:#9eaca5;font-size:10px;line-height:1.5 }
 .scene-state i { flex-shrink:0;width:5px;height:5px;border-radius:50%;background:#f1b35d }
-.scene-state.ready i { background:var(--mint) }.scene-state.error i { background:#ff6f5b }
+.scene-state.error i { background:#ff6f5b }
 button:focus-visible { outline:2px solid var(--mint);outline-offset:-3px }
 @media (hover:hover) { button:not(:disabled):hover { background:rgba(185,242,124,.06) } }
 @media (max-width:700px) { .scene-legend { left:12px;bottom:16px;width:196px }.area-types { gap:5px;padding:0 9px 10px }.area-types button { gap:5px;padding:0 6px;font-size:10px }.legend-heading,.layer-row { padding-right:10px;padding-left:10px } }

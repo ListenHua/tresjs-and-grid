@@ -3,6 +3,7 @@ import { onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import * as maptalks from 'maptalks'
 import 'maptalks/dist/maptalks.css'
 import { useProtectAreaLayer } from '../hooks/useProtectAreaLayer'
+import { resolveRasterSource } from '../utils/RasterSource'
 import { MAP_VIEW_CONFIG } from '../config'
 import type { BaseMapConfig, MapViewState, ProtectAreaFeature, ProtectAreaType, SceneCommand } from '../types/map'
 
@@ -18,6 +19,7 @@ const emit = defineEmits<{
   hover: [feature: ProtectAreaFeature | null]
   select: [feature: ProtectAreaFeature | null]
   view: [state: MapViewState]
+  'raster-error': [message: string | null]
 }>()
 
 const mapContainer = ref<HTMLElement | null>(null)
@@ -27,6 +29,7 @@ const protectAreaLayer = useProtectAreaLayer({
   getVisibleTypes: () => props.visibleTypes,
   onHover: feature => emit('hover', feature),
   onSelect: feature => emit('select', feature),
+  onRasterError: message => emit('raster-error', message),
   onReady: count => {
     protectAreaLayer.setVisible(props.regionsVisible)
     emit('ready', count)
@@ -42,6 +45,16 @@ function createBaseLayer(baseMap: BaseMapConfig | null) {
   return baseMap?.options
     ? new maptalks.TileLayer(`base-${baseMap.id}`, { ...baseMap.options })
     : undefined
+}
+
+function syncRasterSource(baseLayer?: maptalks.TileLayer) {
+  try {
+    protectAreaLayer.setRasterSource(baseLayer ? resolveRasterSource(baseLayer) : null)
+  } catch (error) {
+    protectAreaLayer.setRasterSource(null)
+    const message = error instanceof Error ? error.message : '底图纹理源初始化失败'
+    emit('raster-error', `${message}，顶面已显示分区颜色`)
+  }
 }
 
 function executeCommand(type: SceneCommand) {
@@ -60,12 +73,13 @@ function executeCommand(type: SceneCommand) {
 onMounted(() => {
   if (!mapContainer.value) return
   try {
+    const baseLayer = createBaseLayer(props.baseMap)
     map = new maptalks.Map(mapContainer.value, {
       center: MAP_VIEW_CONFIG.center,
       zoom: MAP_VIEW_CONFIG.zoom,
       pitch: MAP_VIEW_CONFIG.pitch,
       bearing: MAP_VIEW_CONFIG.bearing,
-      baseLayer: createBaseLayer(props.baseMap),
+      baseLayer,
       minZoom: MAP_VIEW_CONFIG.minZoom,
       maxZoom: MAP_VIEW_CONFIG.maxZoom,
       spatialReference: { projection: MAP_VIEW_CONFIG.projection },
@@ -76,6 +90,7 @@ onMounted(() => {
     map.on('click', (event: any) => {
       if (!protectAreaLayer.identify(event.coordinate).length) protectAreaLayer.clearSelection()
     })
+    syncRasterSource(baseLayer)
     protectAreaLayer.createLayer(map)
   } catch (error) {
     emit('error', error instanceof Error ? error.message : '地图初始化失败')
@@ -90,6 +105,7 @@ watch(() => props.baseMap, baseMap => {
     const baseLayer = createBaseLayer(baseMap)
     if (baseLayer) map.setBaseLayer(baseLayer)
     else map.removeBaseLayer()
+    syncRasterSource(baseLayer)
   } catch (error) {
     emit('error', error instanceof Error ? error.message : '底图切换失败')
   }

@@ -1,17 +1,15 @@
 import type { BaseMapConfig, ProtectAreaType } from './types/map'
 
-export const RASTER_SOURCE_CONFIG = {
-  urlTemplate: 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
-  attribution: 'Tiles © Esri',
-  crossOrigin: 'anonymous',
-}
-
 export const BASE_MAPS: BaseMapConfig[] = [
   {
     id: 'satellite',
     name: '卫星影像',
     description: 'Esri · 地表影像',
-    options: { ...RASTER_SOURCE_CONFIG },
+    options: {
+      urlTemplate: 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
+      attribution: 'Tiles © Esri',
+      crossOrigin: 'anonymous',
+    },
   },
   {
     id: 'streets',
@@ -61,14 +59,12 @@ export const EXTRUSION_CONFIG = {
 }
 
 export const RASTER_TOP_CONFIG = {
-  minZoom: 14,
-  maxZoom: 19,
   debounce: 180,
   overscanRatio: 0.15,
-  tileSize: 256,
   paddingPixels: 1,
   maxAtlasSize: 2048,
   maxConcurrentRequests: 8,
+  requestTimeout: 15000,
   maxAnisotropy: 8,
   maxCachedAtlases: 32,
   maxCachedTexturePixels: 12 * 1024 * 1024,

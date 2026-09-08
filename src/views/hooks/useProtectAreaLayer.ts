@@ -8,7 +8,6 @@ import protectAreaJson from '../data/protect_area.json'
 import {
   AREA_TYPE_COLORS,
   AREA_TYPE_FILL_ORDER,
-  RASTER_SOURCE_CONFIG,
   EXTRUSION_CONFIG,
   INTERACTION_COLORS,
   LIGHT_CONFIG,
@@ -18,6 +17,7 @@ import {
 import type { ProtectAreaCollection, ProtectAreaFeature, ProtectAreaType } from '../types/map'
 import { RasterAtlasManager } from '../utils/RasterAtlasManager'
 import type { GeographicExtent, RasterAtlas } from '../utils/RasterAtlasManager'
+import type { RasterSource } from '../utils/RasterSource'
 
 interface ProtectAreaLayerOptions {
   container: Ref<HTMLElement | null>
@@ -25,6 +25,7 @@ interface ProtectAreaLayerOptions {
   onHover: (feature: ProtectAreaFeature | null) => void
   onSelect: (feature: ProtectAreaFeature | null) => void
   onReady: (count: number) => void
+  onRasterError?: (message: string | null) => void
 }
 
 const PROTECT_AREAS = protectAreaJson as ProtectAreaCollection
@@ -60,6 +61,7 @@ interface RasterRequestState {
 
 interface AppliedRasterState {
   atlas: RasterAtlas
+  manager: RasterAtlasManager
   requestedZoom: number
 }
 
@@ -284,13 +286,17 @@ export function useProtectAreaLayer(options: ProtectAreaLayerOptions) {
   const pendingRasterRequests = new Map<string, RasterRequestState>()
   const appliedRasterStates = new Map<string, AppliedRasterState>()
   const warnedRasterRequests = new Set<string>()
+  const failedRasterIds = new Set<string>()
   let layer: ThreeLayer | null = null
   let mapInstance: maptalks.Map | null = null
   let atlasManager: RasterAtlasManager | null = null
+  let rasterSource: RasterSource | null = null
+  let rasterSourceRevision = 0
+  let rasterReady = false
+  let maxAnisotropy = 1
   let selectedId: string | null = null
   let hoveredId: string | null = null
   let rebuildRevision = 0
-  let rasterPrioritySequence = 0
   let rebuildTimer: ReturnType<typeof setTimeout> | undefined
   let detailTimer: ReturnType<typeof setTimeout> | undefined
   let hoverExitTimer: ReturnType<typeof setTimeout> | undefined
@@ -406,6 +412,50 @@ export function useProtectAreaLayer(options: ProtectAreaLayerOptions) {
     options.onSelect(feature)
   }
 
+  function clearRasterTextures() {
+    topMaterials.forEach((material, id) => {
+      material.map = null
+      updateMaterial(id)
+    })
+    appliedRasterStates.forEach(({ atlas, manager }) => manager.releaseAtlas(atlas))
+    appliedRasterStates.clear()
+    rasterRequestIds.clear()
+    pendingRasterRequests.clear()
+    warnedRasterRequests.clear()
+    failedRasterIds.clear()
+    options.onRasterError?.(null)
+  }
+
+  function initializeRasterManager() {
+    if (!rasterReady || !rasterSource || atlasManager) return
+    atlasManager = new RasterAtlasManager({
+      source: rasterSource,
+      paddingPixels: RASTER_TOP_CONFIG.paddingPixels,
+      maxAtlasSize: RASTER_TOP_CONFIG.maxAtlasSize,
+      maxConcurrentRequests: RASTER_TOP_CONFIG.maxConcurrentRequests,
+      requestTimeout: RASTER_TOP_CONFIG.requestTimeout,
+      maxAnisotropy,
+      maxCachedAtlases: RASTER_TOP_CONFIG.maxCachedAtlases,
+      maxCachedTexturePixels: RASTER_TOP_CONFIG.maxCachedTexturePixels,
+      maxCachedImages: RASTER_TOP_CONFIG.maxCachedImages,
+    })
+    scheduleRasterRefresh()
+  }
+
+  function setRasterSource(source: RasterSource | null) {
+    rasterSourceRevision += 1
+    clearTimeout(detailTimer)
+    clearRasterTextures()
+    atlasManager?.dispose()
+    atlasManager = null
+    rasterSource = source
+    initializeRasterManager()
+  }
+
+  function rasterPriority(id: string) {
+    return id === selectedId ? 3 : id === hoveredId ? 2 : 1
+  }
+
   function requestRasterTexture(
     id: string,
     feature: ProtectAreaFeature,
@@ -416,7 +466,8 @@ export function useProtectAreaLayer(options: ProtectAreaLayerOptions) {
     requestExtent: GeographicExtent,
     visibleExtent: GeographicExtent,
   ) {
-    if (!atlasManager) return
+    const manager = atlasManager
+    if (!manager) return
     const siteId = feature.properties.BHDBM
     const applied = appliedRasterStates.get(id)
     if (
@@ -431,30 +482,29 @@ export function useProtectAreaLayer(options: ProtectAreaLayerOptions) {
 
     const requestId = (rasterRequestIds.get(id) ?? 0) + 1
     const revision = rebuildRevision
+    const sourceRevision = rasterSourceRevision
     rasterRequestIds.set(id, requestId)
     pendingRasterRequests.set(id, { requestId, requestedZoom, extent: requestExtent })
 
-    atlasManager.getAtlas(siteId, requestExtent, requestedZoom, ++rasterPrioritySequence)
+    manager.getAtlas(siteId, requestExtent, requestedZoom, rasterPriority(id))
       .then((atlas) => {
         if (
           revision !== rebuildRevision
+          || sourceRevision !== rasterSourceRevision
+          || manager !== atlasManager
           || rasterRequestIds.get(id) !== requestId
           || meshes.get(id) !== mesh
           || !layer
         ) return
         pendingRasterRequests.delete(id)
         applyRasterAtlasUv(object3d, layer, atlas)
-        const previous = appliedRasterStates.get(id)?.atlas
-        if (previous !== atlas) atlasManager?.retainAtlas(atlas)
+        const previous = appliedRasterStates.get(id)
+        if (previous?.atlas !== atlas) manager.retainAtlas(atlas)
         topMaterial.map = atlas.texture
-        appliedRasterStates.set(id, { atlas, requestedZoom })
-        if (previous && previous !== atlas) atlasManager?.releaseAtlas(previous)
+        appliedRasterStates.set(id, { atlas, manager, requestedZoom })
+        if (previous && previous.atlas !== atlas) previous.manager.releaseAtlas(previous.atlas)
+        if (failedRasterIds.delete(id) && failedRasterIds.size === 0) options.onRasterError?.(null)
         updateMaterial(id)
-        const warningKey = `${siteId}:${atlas.zoom}`
-        if (atlas.failedTiles > 0 && !warnedRasterRequests.has(warningKey)) {
-          warnedRasterRequests.add(warningKey)
-          console.warn(`Raster atlas ${siteId} loaded with ${atlas.failedTiles} missing tile(s)`)
-        }
         const fallbackKey = `${siteId}:${requestedZoom}:${atlas.zoom}:fallback`
         if (atlas.zoom !== requestedZoom && !warnedRasterRequests.has(fallbackKey)) {
           warnedRasterRequests.add(fallbackKey)
@@ -469,8 +519,16 @@ export function useProtectAreaLayer(options: ProtectAreaLayerOptions) {
         }
       })
       .catch((error) => {
-        if (revision !== rebuildRevision || rasterRequestIds.get(id) !== requestId) return
+        if (revision !== rebuildRevision || sourceRevision !== rasterSourceRevision
+          || manager !== atlasManager || rasterRequestIds.get(id) !== requestId || meshes.get(id) !== mesh) return
         pendingRasterRequests.delete(id)
+        topMaterial.map = null
+        updateMaterial(id)
+        const previous = appliedRasterStates.get(id)
+        if (previous) previous.manager.releaseAtlas(previous.atlas)
+        appliedRasterStates.delete(id)
+        failedRasterIds.add(id)
+        options.onRasterError?.('部分顶面贴图加载失败，已显示分区颜色；请检查底图网络与跨域配置')
         const warningKey = `${siteId}:${requestedZoom}:error`
         if (warnedRasterRequests.has(warningKey)) return
         warnedRasterRequests.add(warningKey)
@@ -479,7 +537,12 @@ export function useProtectAreaLayer(options: ProtectAreaLayerOptions) {
   }
 
   function refreshRasterTextures() {
-    if (!mapInstance || !atlasManager) return
+    if (!mapInstance || !atlasManager || !rasterSource || !layer?.isVisible()) return
+    const requestedZoom = rasterSource.getZoom()
+    if (requestedZoom === null) {
+      if (appliedRasterStates.size > 0 || pendingRasterRequests.size > 0 || failedRasterIds.size > 0) setRasterSource(rasterSource)
+      return
+    }
     const view = mapInstance.getExtent()
     const { xmin, ymin, xmax, ymax } = view
     if (
@@ -496,12 +559,9 @@ export function useProtectAreaLayer(options: ProtectAreaLayerOptions) {
       north: ymax,
     }
     const expandedView = expandExtent(viewExtent, RASTER_TOP_CONFIG.overscanRatio)
-    const requestedZoom = Math.max(
-      RASTER_TOP_CONFIG.minZoom,
-      Math.min(RASTER_TOP_CONFIG.maxZoom, Math.round(mapInstance.getZoom())),
-    )
-
-    featureById.forEach((feature, id) => {
+    const prioritizedFeatures = [...featureById.entries()].sort(([firstId], [secondId]) =>
+      rasterPriority(secondId) - rasterPriority(firstId))
+    prioritizedFeatures.forEach(([id, feature]) => {
       const siteExtent = SITE_EXTENTS.get(feature.properties.BHDBM)
       if (!siteExtent) return
       const visibleExtent = intersectExtents(siteExtent, viewExtent)
@@ -633,7 +693,7 @@ export function useProtectAreaLayer(options: ProtectAreaLayerOptions) {
     clearTimeout(hoverExitTimer)
     extrusionAnimations.forEach(animation => animation.kill())
     extrusionAnimations.clear()
-    appliedRasterStates.forEach(({ atlas }) => atlasManager?.releaseAtlas(atlas))
+    appliedRasterStates.forEach(({ atlas, manager }) => manager.releaseAtlas(atlas))
     meshes.forEach(mesh => {
       layer?.removeMesh(mesh)
       mesh.getObject3d().traverse(object => {
@@ -655,6 +715,8 @@ export function useProtectAreaLayer(options: ProtectAreaLayerOptions) {
     rasterRequestIds.clear()
     pendingRasterRequests.clear()
     appliedRasterStates.clear()
+    failedRasterIds.clear()
+    if (rasterSource) options.onRasterError?.(null)
   }
 
   function rebuild() {
@@ -680,23 +742,14 @@ export function useProtectAreaLayer(options: ProtectAreaLayerOptions) {
 
   function createLayer(map: maptalks.Map) {
     mapInstance = map
-    map.on('zoomend moveend', scheduleRasterRefresh)
+    map.on('zoomend moveend pitchend rotateend', scheduleRasterRefresh)
     layer = new ThreeLayer(THREE_LAYER_CONFIG.id, THREE_LAYER_CONFIG)
     layer.prepareToDraw = (_gl, scene) => {
       const renderer = layer?.getThreeRenderer()
       const supportedAnisotropy = renderer?.capabilities.getMaxAnisotropy() ?? 1
-      atlasManager = new RasterAtlasManager({
-        urlTemplate: RASTER_SOURCE_CONFIG.urlTemplate,
-        crossOrigin: RASTER_SOURCE_CONFIG.crossOrigin,
-        tileSize: RASTER_TOP_CONFIG.tileSize,
-        paddingPixels: RASTER_TOP_CONFIG.paddingPixels,
-        maxAtlasSize: RASTER_TOP_CONFIG.maxAtlasSize,
-        maxConcurrentRequests: RASTER_TOP_CONFIG.maxConcurrentRequests,
-        maxAnisotropy: Math.min(RASTER_TOP_CONFIG.maxAnisotropy, supportedAnisotropy),
-        maxCachedAtlases: RASTER_TOP_CONFIG.maxCachedAtlases,
-        maxCachedTexturePixels: RASTER_TOP_CONFIG.maxCachedTexturePixels,
-        maxCachedImages: RASTER_TOP_CONFIG.maxCachedImages,
-      })
+      maxAnisotropy = Math.min(RASTER_TOP_CONFIG.maxAnisotropy, supportedAnisotropy)
+      rasterReady = true
+      initializeRasterManager()
       scene.add(new THREE.HemisphereLight(
         LIGHT_CONFIG.hemisphere.skyColor,
         LIGHT_CONFIG.hemisphere.groundColor,
@@ -723,6 +776,7 @@ export function useProtectAreaLayer(options: ProtectAreaLayerOptions) {
   function setVisible(visible: boolean) {
     if (visible) {
       layer?.show()
+      scheduleRasterRefresh()
       return
     }
 
@@ -748,15 +802,18 @@ export function useProtectAreaLayer(options: ProtectAreaLayerOptions) {
     clearTimeout(detailTimer)
     clearTimeout(hoverExitTimer)
     rebuildRevision += 1
-    mapInstance?.off('zoomend moveend', scheduleRasterRefresh)
+    rasterSourceRevision += 1
+    rasterReady = false
+    mapInstance?.off('zoomend moveend pitchend rotateend', scheduleRasterRefresh)
     mapInstance = null
     options.container.value?.classList.remove('is-picking')
     disposeMeshes()
     atlasManager?.dispose()
     atlasManager = null
+    rasterSource = null
     layer?.remove()
     layer = null
   }
 
-  return { createLayer, identify, setVisible, clearSelection, scheduleRebuild, dispose }
+  return { createLayer, identify, setVisible, setRasterSource, clearSelection, scheduleRebuild, dispose }
 }

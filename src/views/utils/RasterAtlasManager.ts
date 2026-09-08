@@ -1,4 +1,5 @@
 import * as THREE from 'three'
+import type { RasterSource } from './RasterSource'
 
 export interface GeographicExtent {
   west: number
@@ -26,16 +27,14 @@ export interface RasterAtlas {
   zoom: number
   sourcePixels: PixelBounds
   canvasPixels: PixelBounds
-  failedTiles: number
 }
 
 interface RasterAtlasManagerOptions {
-  urlTemplate: string
-  crossOrigin?: string | null
-  tileSize: number
+  source: RasterSource
   paddingPixels: number
   maxAtlasSize: number
   maxConcurrentRequests: number
+  requestTimeout: number
   maxAnisotropy: number
   maxCachedAtlases: number
   maxCachedTexturePixels: number
@@ -67,10 +66,10 @@ interface TileLoadTask {
   order: number
   started: boolean
   run: () => void
+  cancel: () => void
 }
 
-function lngLatToGlobalPixel(lng: number, lat: number, zoom: number, tileSize: number): PixelPoint {
-  const scale = 2 ** zoom * tileSize
+function lngLatToGlobalPixel(lng: number, lat: number, scale: number): PixelPoint {
   const safeLatitude = Math.max(-85.0511287798, Math.min(85.0511287798, lat))
   const latitudeRadians = safeLatitude * Math.PI / 180
   return {
@@ -79,8 +78,7 @@ function lngLatToGlobalPixel(lng: number, lat: number, zoom: number, tileSize: n
   }
 }
 
-function globalPixelBoundsToExtent(bounds: PixelBounds, zoom: number, tileSize: number): GeographicExtent {
-  const scale = 2 ** zoom * tileSize
+function globalPixelBoundsToExtent(bounds: PixelBounds, scale: number): GeographicExtent {
   const longitude = (x: number) => x / scale * 360 - 180
   const latitude = (y: number) => Math.atan(Math.sinh(Math.PI * (1 - 2 * y / scale))) * 180 / Math.PI
   return {
@@ -91,9 +89,9 @@ function globalPixelBoundsToExtent(bounds: PixelBounds, zoom: number, tileSize: 
   }
 }
 
-function atlasBounds(extent: GeographicExtent, zoom: number, tileSize: number, padding: number) {
-  const northWest = lngLatToGlobalPixel(extent.west, extent.north, zoom, tileSize)
-  const southEast = lngLatToGlobalPixel(extent.east, extent.south, zoom, tileSize)
+function atlasBounds(extent: GeographicExtent, worldSize: number, padding: number) {
+  const northWest = lngLatToGlobalPixel(extent.west, extent.north, worldSize)
+  const southEast = lngLatToGlobalPixel(extent.east, extent.south, worldSize)
   const sourcePixels: PixelBounds = {
     left: northWest.x,
     top: northWest.y,
@@ -120,6 +118,7 @@ export class RasterAtlasManager {
   private readonly atlasCache = new Map<string, AtlasCacheEntry>()
   private readonly imageCache = new Map<string, ImageCacheEntry>()
   private readonly loadQueue: TileLoadTask[] = []
+  private readonly activeTasks = new Set<TileLoadTask>()
   private readonly options: RasterAtlasManagerOptions
   private activeLoads = 0
   private accessSequence = 0
@@ -134,8 +133,7 @@ export class RasterAtlasManager {
   canRenderAtZoom(extent: GeographicExtent, zoom: number) {
     const { canvasPixels } = atlasBounds(
       extent,
-      zoom,
-      this.options.tileSize,
+      this.options.source.getWorldSize(zoom),
       this.options.paddingPixels,
     )
     const { width, height } = canvasSize(canvasPixels)
@@ -143,10 +141,17 @@ export class RasterAtlasManager {
   }
 
   getAtlas(id: string, extent: GeographicExtent, requestedZoom: number, priority = 0) {
+    if (this.disposed) return Promise.reject(new Error('Raster atlas manager has been disposed'))
     this.pruneAtlasCache()
-    const zoom = this.resolveZoom(extent, requestedZoom)
-    const { canvasPixels } = atlasBounds(extent, zoom, this.options.tileSize, this.options.paddingPixels)
+    let zoom: number
+    try {
+      zoom = this.resolveZoom(extent, requestedZoom)
+    } catch (error) {
+      return Promise.reject(error)
+    }
+    const { canvasPixels } = atlasBounds(extent, this.options.source.getWorldSize(zoom), this.options.paddingPixels)
     const key = [
+      this.options.source.id,
       id,
       zoom,
       canvasPixels.left,
@@ -167,6 +172,10 @@ export class RasterAtlasManager {
     }
     const promise = this.createAtlas(key, extent, zoom, priority)
       .then((atlas) => {
+        if (this.disposed) {
+          atlas.texture.dispose()
+          throw new Error('Raster atlas request was superseded')
+        }
         entry.atlas = atlas
         return atlas
       })
@@ -199,25 +208,21 @@ export class RasterAtlasManager {
   }
 
   dispose() {
+    if (this.disposed) return
     this.disposed = true
     this.revision += 1
+    this.loadQueue.splice(0).forEach(task => task.cancel())
+    Array.from(this.activeTasks).forEach(task => task.cancel())
     this.atlasCache.forEach(entry => entry.atlas?.texture.dispose())
     this.atlasCache.clear()
     this.imageCache.clear()
-    this.drainQueue()
   }
 
   private resolveZoom(extent: GeographicExtent, requestedZoom: number) {
-    let zoom = requestedZoom
-    while (zoom > 0) {
-      const { canvasPixels } = atlasBounds(
-        extent,
-        zoom,
-        this.options.tileSize,
-        this.options.paddingPixels,
-      )
-      const { width, height } = canvasSize(canvasPixels)
-      if (width <= this.options.maxAtlasSize && height <= this.options.maxAtlasSize) break
+    const { source } = this.options
+    let zoom = Math.max(source.minZoom, Math.min(source.maxZoom, Math.round(requestedZoom)))
+    while (!this.canRenderAtZoom(extent, zoom)) {
+      if (zoom <= source.minZoom) throw new Error('Raster extent exceeds the texture size limit')
       zoom -= 1
     }
     return zoom
@@ -231,27 +236,30 @@ export class RasterAtlasManager {
   ): Promise<RasterAtlas> {
     if (this.disposed) throw new Error('Raster atlas manager has been disposed')
     const revision = this.revision
-    const { tileSize, paddingPixels } = this.options
-    const { canvasPixels } = atlasBounds(extent, zoom, tileSize, paddingPixels)
-    const coverageExtent = globalPixelBoundsToExtent(canvasPixels, zoom, tileSize)
+    const { source, paddingPixels } = this.options
+    const { tileSize } = source
+    const worldSize = source.getWorldSize(zoom)
+    const { canvasPixels } = atlasBounds(extent, worldSize, paddingPixels)
+    const coverageExtent = globalPixelBoundsToExtent(canvasPixels, worldSize)
     const { width, height } = canvasSize(canvasPixels)
     const minTileX = Math.floor(canvasPixels.left / tileSize)
     const maxTileX = Math.floor((canvasPixels.right - 1) / tileSize)
     const minTileY = Math.floor(canvasPixels.top / tileSize)
     const maxTileY = Math.floor((canvasPixels.bottom - 1) / tileSize)
-    const tileCount = 2 ** zoom
-    const tasks: Array<Promise<TileImage>> = []
+    const tileCount = Math.round(worldSize / tileSize)
+    const tiles: Array<{ url: string; x: number; y: number }> = []
 
     for (let y = minTileY; y <= maxTileY; y += 1) {
       if (y < 0 || y >= tileCount) continue
       for (let x = minTileX; x <= maxTileX; x += 1) {
         const normalizedX = ((x % tileCount) + tileCount) % tileCount
-        const url = this.tileUrl(normalizedX, y, zoom)
-        tasks.push(this.loadImage(url, priority).then(image => ({ image, x, y })))
+        const url = source.getTileUrl(normalizedX, y, zoom)
+        tiles.push({ url, x, y })
       }
     }
 
-    const results = await Promise.allSettled(tasks)
+    const results = await Promise.allSettled(tiles.map(({ url, x, y }) =>
+      this.loadImage(url, priority).then(image => ({ image, x, y }))))
     if (this.disposed || revision !== this.revision) {
       throw new Error('Raster atlas request was superseded')
     }
@@ -259,7 +267,9 @@ export class RasterAtlasManager {
     const loadedTiles = results
       .filter((result): result is PromiseFulfilledResult<TileImage> => result.status === 'fulfilled')
       .map(result => result.value)
-    if (loadedTiles.length === 0) throw new Error(`No raster tiles loaded at zoom ${zoom}`)
+    if (loadedTiles.length === 0 || loadedTiles.length !== results.length) {
+      throw new Error(`Raster tiles failed at zoom ${zoom}; check network access and CORS`)
+    }
 
     const canvas = document.createElement('canvas')
     canvas.width = width
@@ -277,6 +287,7 @@ export class RasterAtlasManager {
         tileSize,
       )
     })
+    context.getImageData(0, 0, 1, 1)
 
     const texture = new THREE.CanvasTexture(canvas)
     texture.colorSpace = THREE.SRGBColorSpace
@@ -294,11 +305,11 @@ export class RasterAtlasManager {
       zoom,
       sourcePixels: canvasPixels,
       canvasPixels,
-      failedTiles: results.length - loadedTiles.length,
     }
   }
 
   private loadImage(url: string, priority: number) {
+    if (this.disposed) return Promise.reject<HTMLImageElement>(new Error('Raster image request cancelled'))
     const cached = this.imageCache.get(url)
     if (cached) {
       cached.lastUsed = ++this.accessSequence
@@ -311,6 +322,25 @@ export class RasterAtlasManager {
 
     let task!: TileLoadTask
     const promise = new Promise<HTMLImageElement>((resolve, reject) => {
+      let image: HTMLImageElement | null = null
+      let timer: ReturnType<typeof setTimeout> | undefined
+      let settled = false
+      const finish = (error?: Error) => {
+        if (settled) return
+        settled = true
+        clearTimeout(timer)
+        if (image) {
+          image.onload = null
+          image.onerror = null
+          if (error) image.removeAttribute('src')
+        }
+        if (task.started) {
+          this.activeTasks.delete(task)
+          this.finishLoad()
+        }
+        if (error) reject(error)
+        else resolve(image!)
+      }
       task = {
         priority,
         order: this.queueSequence++,
@@ -318,29 +348,19 @@ export class RasterAtlasManager {
         run: () => {
           task.started = true
           if (this.disposed) {
-            this.finishLoad()
-            reject(new Error('Raster image request cancelled'))
+            finish(new Error('Raster image request cancelled'))
             return
           }
-          const image = new Image()
-          if (this.options.crossOrigin !== null && this.options.crossOrigin !== undefined) {
-            image.crossOrigin = this.options.crossOrigin
-          }
+          this.activeTasks.add(task)
+          image = new Image()
+          image.crossOrigin = this.options.source.crossOrigin
           image.decoding = 'async'
-          image.onload = () => {
-            image.onload = null
-            image.onerror = null
-            this.finishLoad()
-            resolve(image)
-          }
-          image.onerror = () => {
-            image.onload = null
-            image.onerror = null
-            this.finishLoad()
-            reject(new Error(`Failed to load raster tile: ${url}`))
-          }
+          image.onload = () => finish()
+          image.onerror = () => finish(new Error('Failed to load raster tile'))
+          timer = setTimeout(() => finish(new Error('Raster tile request timed out')), this.options.requestTimeout)
           image.src = url
         },
+        cancel: () => finish(new Error('Raster image request cancelled')),
       }
       this.loadQueue.push(task)
       this.sortLoadQueue()
@@ -371,7 +391,7 @@ export class RasterAtlasManager {
   }
 
   private drainQueue() {
-    while (this.activeLoads < this.options.maxConcurrentRequests && this.loadQueue.length > 0) {
+    while (!this.disposed && this.activeLoads < this.options.maxConcurrentRequests && this.loadQueue.length > 0) {
       const task = this.loadQueue.shift()
       if (!task) return
       this.activeLoads += 1
@@ -423,10 +443,4 @@ export class RasterAtlasManager {
     }
   }
 
-  private tileUrl(x: number, y: number, z: number) {
-    return this.options.urlTemplate
-      .replace('{z}', String(z))
-      .replace('{x}', String(x))
-      .replace('{y}', String(y))
-  }
 }

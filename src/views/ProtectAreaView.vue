@@ -8,6 +8,7 @@ import { AREA_TYPE_COLORS, AREA_TYPE_STYLES, BASE_MAPS, MAP_VIEW_CONFIG } from '
 
 const status = ref<'loading' | 'ready' | 'error'>('loading')
 const statusMessage = ref('正在构建空间场景')
+const rasterError = ref<string | null>(null)
 const selected = ref<ProtectAreaFeature | null>(null)
 const hovered = ref<ProtectAreaFeature | null>(null)
 const regionsVisible = ref(true)
@@ -23,7 +24,7 @@ const view = reactive<MapViewState>({
 const activeArea = computed(() => regionsVisible.value ? selected.value ?? hovered.value : null)
 
 function runCommand(type: SceneCommand) { command.type = type; command.id += 1 }
-function setReady(count: number) { status.value = 'ready'; statusMessage.value = count + ' 个功能分区已载入' }
+function setReady() { status.value = 'ready'; statusMessage.value = '' }
 function setError(message: string) { status.value = 'error'; statusMessage.value = message }
 function toggleType(type: ProtectAreaType) {
   visibleTypes.value = visibleTypes.value.includes(type)
@@ -35,11 +36,13 @@ function toggleType(type: ProtectAreaType) {
 <template>
   <main class="planning-workspace">
     <MapScene :command="command" :regions-visible="regionsVisible" :base-map="activeBaseMap" :visible-types="visibleTypes"
-      @ready="setReady" @error="setError" @hover="hovered = $event" @select="selected = $event" @view="Object.assign(view, $event)" />
+      @ready="setReady" @error="setError" @raster-error="rasterError = $event"
+      @hover="hovered = $event" @select="selected = $event" @view="Object.assign(view, $event)" />
     <div class="map-shade" aria-hidden="true"></div>
 
     <SceneLegend v-model:regions-visible="regionsVisible"
-      :visible-types="visibleTypes" :status="status" :status-message="statusMessage" @toggle-type="toggleType" />
+      :visible-types="visibleTypes" :status="rasterError && status === 'ready' ? 'error' : status"
+      :status-message="status === 'ready' && rasterError ? rasterError : statusMessage" @toggle-type="toggleType" />
 
     <section v-if="activeArea" class="region-card" aria-label="功能区信息" aria-live="polite">
       <div class="region-heading">
