@@ -4,17 +4,18 @@ import { ThreeLayer } from 'maptalks.three'
 import type BaseObject from 'maptalks.three/dist/BaseObject'
 import { gsap } from 'gsap'
 import * as THREE from 'three'
-import protectAreaJson from '../data/protect_area.json'
+import { PROTECT_AREAS, SITE_EXTENTS } from '../data/protectAreas'
 import {
   AREA_TYPE_COLORS,
   AREA_TYPE_FILL_ORDER,
   EXTRUSION_CONFIG,
   INTERACTION_COLORS,
   LIGHT_CONFIG,
+  MAP_FLIGHT_CONFIG,
   RASTER_TOP_CONFIG,
   THREE_LAYER_CONFIG,
 } from '../config'
-import type { ProtectAreaCollection, ProtectAreaFeature, ProtectAreaType } from '../types/map'
+import type { ProtectAreaFeature, ProtectAreaType } from '../types/map'
 import { RasterAtlasManager } from '../utils/RasterAtlasManager'
 import type { GeographicExtent, RasterAtlas } from '../utils/RasterAtlasManager'
 import type { RasterSource } from '../utils/RasterSource'
@@ -26,32 +27,8 @@ interface ProtectAreaLayerOptions {
   onSelect: (feature: ProtectAreaFeature | null) => void
   onReady: (count: number) => void
   onRasterError?: (message: string | null) => void
+  onMeshesReady?: () => void
 }
-
-const PROTECT_AREAS = protectAreaJson as ProtectAreaCollection
-
-function buildSiteExtents(features: ProtectAreaFeature[]) {
-  const extents = new Map<string, GeographicExtent>()
-  features.forEach((feature) => {
-    const id = feature.properties.BHDBM
-    const extent = extents.get(id) ?? {
-      west: Infinity,
-      south: Infinity,
-      east: -Infinity,
-      north: -Infinity,
-    }
-    feature.geometry.coordinates.forEach(polygon => polygon.forEach(ring => ring.forEach(([lng, lat]) => {
-      extent.west = Math.min(extent.west, lng)
-      extent.south = Math.min(extent.south, lat)
-      extent.east = Math.max(extent.east, lng)
-      extent.north = Math.max(extent.north, lat)
-    })))
-    extents.set(id, extent)
-  })
-  return extents
-}
-
-const SITE_EXTENTS = buildSiteExtents(PROTECT_AREAS.features)
 
 interface RasterRequestState {
   requestId: number
@@ -297,9 +274,12 @@ export function useProtectAreaLayer(options: ProtectAreaLayerOptions) {
   let selectedId: string | null = null
   let hoveredId: string | null = null
   let rebuildRevision = 0
+  let rebuildPending = false
   let rebuildTimer: ReturnType<typeof setTimeout> | undefined
   let detailTimer: ReturnType<typeof setTimeout> | undefined
   let hoverExitTimer: ReturnType<typeof setTimeout> | undefined
+  let flightActive = false
+  let lastFlightRasterRefresh = 0
   const supportsHover = typeof window === 'undefined'
     || window.matchMedia('(hover: hover) and (pointer: fine)').matches
   const prefersReducedMotion = typeof window !== 'undefined'
@@ -327,10 +307,6 @@ export function useProtectAreaLayer(options: ProtectAreaLayerOptions) {
     }
     if (transparencyChanged) topMaterial.needsUpdate = true
     return state
-  }
-
-  function featureId(feature: ProtectAreaFeature, index: number) {
-    return `${feature.properties.BHDBM}-${feature.properties.BHDLX}-${index}`
   }
 
   function updateMaterial(id: string) {
@@ -397,9 +373,7 @@ export function useProtectAreaLayer(options: ProtectAreaLayerOptions) {
 
   function setSelection(feature: ProtectAreaFeature | null, immediate = false) {
     const previous = selectedId
-    selectedId = feature
-      ? [...featureById.entries()].find(([, value]) => value === feature)?.[0] ?? null
-      : null
+    selectedId = feature && featureById.has(feature.id) ? feature.id : null
     if (previous && previous !== selectedId) {
       updateMaterial(previous)
       setMeshRaised(previous, previous === hoveredId, immediate)
@@ -409,7 +383,7 @@ export function useProtectAreaLayer(options: ProtectAreaLayerOptions) {
       setMeshRaised(selectedId, true, immediate)
       refreshRasterTextures()
     }
-    options.onSelect(feature)
+    options.onSelect(selectedId ? featureById.get(selectedId) ?? null : null)
   }
 
   function clearRasterTextures() {
@@ -445,6 +419,7 @@ export function useProtectAreaLayer(options: ProtectAreaLayerOptions) {
   function setRasterSource(source: RasterSource | null) {
     rasterSourceRevision += 1
     clearTimeout(detailTimer)
+    detailTimer = undefined
     clearRasterTextures()
     atlasManager?.dispose()
     atlasManager = null
@@ -537,6 +512,13 @@ export function useProtectAreaLayer(options: ProtectAreaLayerOptions) {
   }
 
   function refreshRasterTextures() {
+    if (flightActive) {
+      if (performance.now() - lastFlightRasterRefresh < MAP_FLIGHT_CONFIG.rasterRefreshInterval) {
+        scheduleRasterRefresh()
+        return
+      }
+      lastFlightRasterRefresh = performance.now()
+    }
     if (!mapInstance || !atlasManager || !rasterSource || !layer?.isVisible()) return
     const requestedZoom = rasterSource.getZoom()
     if (requestedZoom === null) {
@@ -589,13 +571,20 @@ export function useProtectAreaLayer(options: ProtectAreaLayerOptions) {
   }
 
   function scheduleRasterRefresh() {
+    if (flightActive && detailTimer !== undefined) return
     clearTimeout(detailTimer)
-    detailTimer = setTimeout(refreshRasterTextures, RASTER_TOP_CONFIG.debounce)
+    const delay = flightActive
+      ? Math.max(0, MAP_FLIGHT_CONFIG.rasterRefreshInterval - (performance.now() - lastFlightRasterRefresh))
+      : RASTER_TOP_CONFIG.debounce
+    detailTimer = setTimeout(() => {
+      detailTimer = undefined
+      refreshRasterTextures()
+    }, delay)
   }
 
-  function createMesh(feature: ProtectAreaFeature, index: number) {
+  function createMesh(feature: ProtectAreaFeature) {
     if (!layer || !options.getVisibleTypes().includes(feature.properties.BHDLX)) return
-    const id = featureId(feature, index)
+    const id = feature.id
     const geometry = maptalks.GeoJSON.toGeometry(feature as any)
     if (!(geometry instanceof maptalks.Polygon) && !(geometry instanceof maptalks.MultiPolygon)) return
     const sideMaterial = new THREE.MeshPhongMaterial({
@@ -651,7 +640,7 @@ export function useProtectAreaLayer(options: ProtectAreaLayerOptions) {
     object3d.scale.z = EXTRUSION_CONFIG.flatScale
     mesh.setId(id).setProperties(feature.properties)
     mesh.on('mouseover', () => {
-      if (!supportsHover) return
+      if (!supportsHover || flightActive) return
       clearTimeout(hoverExitTimer)
       if (hoveredId === id) return
       const previous = hoveredId
@@ -667,7 +656,7 @@ export function useProtectAreaLayer(options: ProtectAreaLayerOptions) {
       options.onHover(feature)
     })
     mesh.on('mouseout', () => {
-      if (!supportsHover) return
+      if (!supportsHover || flightActive) return
       clearTimeout(hoverExitTimer)
       hoverExitTimer = setTimeout(() => {
         if (hoveredId !== id) return
@@ -721,6 +710,7 @@ export function useProtectAreaLayer(options: ProtectAreaLayerOptions) {
 
   function rebuild() {
     if (!layer) return
+    clearTimeout(rebuildTimer)
     const selectedFeature = selectedId ? featureById.get(selectedId) : null
     rebuildRevision += 1
     selectedId = null
@@ -732,10 +722,13 @@ export function useProtectAreaLayer(options: ProtectAreaLayerOptions) {
     setSelection(selectedFeature && options.getVisibleTypes().includes(selectedFeature.properties.BHDLX)
       ? selectedFeature
       : null, true)
+    rebuildPending = false
     scheduleRasterRefresh()
+    options.onMeshesReady?.()
   }
 
   function scheduleRebuild() {
+    rebuildPending = true
     clearTimeout(rebuildTimer)
     rebuildTimer = setTimeout(rebuild, 120)
   }
@@ -793,7 +786,48 @@ export function useProtectAreaLayer(options: ProtectAreaLayerOptions) {
     layer?.hide()
   }
 
+  function clearHover() {
+    clearTimeout(hoverExitTimer)
+    const previous = hoveredId
+    hoveredId = null
+    if (previous) {
+      if (previous !== selectedId) setMeshRaised(previous, false)
+      updateMaterial(previous)
+    }
+    options.container.value?.classList.remove('is-picking')
+    options.onHover(null)
+  }
+
+  function isSelectionReady() {
+    return rasterReady && !rebuildPending
+  }
+
+  function setFlightActive(active: boolean) {
+    flightActive = active
+    clearTimeout(detailTimer)
+    detailTimer = undefined
+    if (active) {
+      clearHover()
+      lastFlightRasterRefresh = performance.now()
+      scheduleRasterRefresh()
+    }
+  }
+
+  function selectFeature(id: string) {
+    if (!isSelectionReady() || !layer?.isVisible()) return false
+    const feature = featureById.get(id)
+    if (!feature) return false
+    clearHover()
+    if (selectedId !== id) setSelection(feature)
+    return true
+  }
+
+  function getSelection() {
+    return selectedId ? featureById.get(selectedId) ?? null : null
+  }
+
   function clearSelection() {
+    clearHover()
     setSelection(null)
   }
 
@@ -801,6 +835,8 @@ export function useProtectAreaLayer(options: ProtectAreaLayerOptions) {
     clearTimeout(rebuildTimer)
     clearTimeout(detailTimer)
     clearTimeout(hoverExitTimer)
+    flightActive = false
+    detailTimer = undefined
     rebuildRevision += 1
     rasterSourceRevision += 1
     rasterReady = false
@@ -815,5 +851,6 @@ export function useProtectAreaLayer(options: ProtectAreaLayerOptions) {
     layer = null
   }
 
-  return { createLayer, identify, setVisible, setRasterSource, clearSelection, scheduleRebuild, dispose }
+  return { createLayer, identify, setVisible, setRasterSource, clearSelection, selectFeature, getSelection,
+    isSelectionReady, scheduleRebuild, setFlightActive, refreshRaster: refreshRasterTextures, dispose }
 }

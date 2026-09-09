@@ -43,14 +43,14 @@ const expanded = ref(true)
 </template>
 
 <style scoped>
-.scene-legend { position:absolute;left:20px;bottom:24px;z-index:2;width:236px;border:1px solid rgba(242,240,233,.18);background:rgba(16,27,24,.92);box-shadow:0 10px 30px rgba(0,0,0,.24);backdrop-filter:blur(14px) }
+.scene-legend { display:flex;flex:0 0 auto;flex-direction:column;width:236px;max-height:45%;min-height:44px;overflow:hidden;border:1px solid rgba(242,240,233,.18);background:rgba(16,27,24,.92);box-shadow:0 10px 30px rgba(0,0,0,.24);backdrop-filter:blur(14px) }
 button { color:inherit;cursor:pointer }
-.legend-heading { display:flex;align-items:center;gap:9px;width:100%;height:43px;padding:0 13px;border:0;background:transparent;text-align:left }
+.legend-heading { display:flex;flex-shrink:0;align-items:center;gap:9px;width:100%;height:43px;padding:0 13px;border:0;background:transparent;text-align:left }
 .legend-heading span { flex:1;font-size:12px;font-weight:600;letter-spacing:1px }
 .legend-heading > svg:first-child { color:var(--mint) }
 .legend-heading > svg:last-child { color:#94a49c;transition:transform 150ms ease }
 .legend-heading > svg.collapsed { transform:rotate(180deg) }
-.legend-content { max-height:calc(100dvh - 100px);overflow-y:auto;border-top:1px solid rgba(242,240,233,.11) }
+.legend-content { min-height:0;overflow-y:auto;overscroll-behavior:contain;border-top:1px solid rgba(242,240,233,.11);scrollbar-width:thin }
 .layer-row { display:grid;grid-template-columns:18px 1fr 15px;align-items:center;gap:9px;width:100%;min-height:45px;padding:10px 13px;border:0;background:transparent;text-align:left;font-size:11px }
 .layer-row > svg { color:#9cab9f }
 .layer-swatch { width:16px;height:16px;border:1px solid rgba(255,255,255,.25);background:var(--coral);box-shadow:inset 0 -5px 0 rgba(0,0,0,.18) }
@@ -65,7 +65,7 @@ button[aria-checked="false"] { opacity:.45 }
 .scene-state.error i { background:#ff6f5b }
 button:focus-visible { outline:2px solid var(--mint);outline-offset:-3px }
 @media (hover:hover) { button:not(:disabled):hover { background:rgba(185,242,124,.06) } }
-@media (max-width:700px) { .scene-legend { left:12px;bottom:16px;width:196px }.area-types { gap:5px;padding:0 9px 10px }.area-types button { gap:5px;padding:0 6px;font-size:10px }.legend-heading,.layer-row { padding-right:10px;padding-left:10px } }
+@media (max-width:700px) { .scene-legend { width:196px }.area-types { gap:5px;padding:0 9px 10px }.area-types button { gap:5px;padding:0 6px;font-size:10px }.legend-heading,.layer-row { padding-right:10px;padding-left:10px } }
 @media (max-width:480px) { .scene-legend { width:148px }.area-types { grid-template-columns:1fr }.scene-state { padding:8px 10px;font-size:9px } }
 @media (prefers-reduced-motion:reduce) { .legend-heading > svg:last-child { transition:none } }
 </style>

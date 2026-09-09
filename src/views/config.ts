@@ -42,6 +42,25 @@ export const MAP_VIEW_CONFIG = {
   dimensionDuration: 520,
 }
 
+export const MAP_FLIGHT_CONFIG = {
+  minDuration: 0.6,
+  maxDuration: 2,
+  sameSiteMaxDuration: 0.9,
+  nearbyMinDuration: 0.9,
+  nearbyMaxDuration: 1.3,
+  farMinDuration: 1.3,
+  farDistanceRatio: 1.25,
+  maxPullback: 3.5,
+  pullbackRatio: 0.4,
+  centerEase: 'power2.inOut',
+  pullbackEase: 'power2.out',
+  approachEase: 'power2.inOut',
+  centerTolerance: 1,
+  zoomTolerance: 0.005,
+  zoomOffset: -0.75,
+  rasterRefreshInterval: 450,
+}
+
 export const EXTRUSION_CONFIG = {
   height: 80,
   shininess: 14,

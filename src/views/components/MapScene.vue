@@ -1,17 +1,21 @@
 <script setup lang="ts">
-import { onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import * as maptalks from 'maptalks'
 import 'maptalks/dist/maptalks.css'
 import { useProtectAreaLayer } from '../hooks/useProtectAreaLayer'
+import { stopMapAnimation, useMapFlight } from '../hooks/useMapFlight'
 import { resolveRasterSource } from '../utils/RasterSource'
+import { getFocusPadding, getFocusView } from '../utils/mapNavigation'
+import { FEATURE_BY_ID, SITE_BY_ID, getFeatureExtent } from '../data/protectAreas'
 import { MAP_VIEW_CONFIG } from '../config'
-import type { BaseMapConfig, MapViewState, ProtectAreaFeature, ProtectAreaType, SceneCommand } from '../types/map'
+import type { AreaRequest, BaseMapConfig, MapViewState, ProtectAreaFeature, ProtectAreaType, SceneCommand } from '../types/map'
 
 const props = defineProps<{
   command: { id: number; type: SceneCommand }
   regionsVisible: boolean
   baseMap: BaseMapConfig | null
   visibleTypes: ProtectAreaType[]
+  areaRequest: AreaRequest | null
 }>()
 const emit = defineEmits<{
   ready: [count: number]
@@ -24,21 +28,103 @@ const emit = defineEmits<{
 
 const mapContainer = ref<HTMLElement | null>(null)
 let map: maptalks.Map | null = null
+let sceneReady = false
+let pendingAreaRequest = props.areaRequest
+let focusRevision = 0
+let nativeAnimation: ReturnType<maptalks.Map['animateTo']> | null = null
+let inputContainer: HTMLElement | null = null
+const inputEvents = ['pointerdown', 'wheel', 'touchstart', 'keydown'] as const
 const protectAreaLayer = useProtectAreaLayer({
   container: mapContainer,
   getVisibleTypes: () => props.visibleTypes,
   onHover: feature => emit('hover', feature),
   onSelect: feature => emit('select', feature),
   onRasterError: message => emit('raster-error', message),
+  onMeshesReady: () => { void processAreaRequest() },
   onReady: count => {
+    sceneReady = true
     protectAreaLayer.setVisible(props.regionsVisible)
     emit('ready', count)
+    reportView()
+    void processAreaRequest()
+  },
+})
+const mapFlight = useMapFlight({
+  getMap: () => map,
+  onFlightChange: protectAreaLayer.setFlightActive,
+  onSettled: () => {
+    protectAreaLayer.refreshRaster()
     reportView()
   },
 })
 
 function reportView() {
-  if (map) emit('view', { zoom: map.getZoom(), pitch: map.getPitch(), bearing: map.getBearing() })
+  if (map && sceneReady && !mapFlight.isFlying()) emit('view', { zoom: map.getZoom(), pitch: map.getPitch(), bearing: map.getBearing() })
+}
+
+function stopNativeAnimation() {
+  if (nativeAnimation && map) stopMapAnimation(map)
+  nativeAnimation = null
+}
+
+function cancelAreaRequest() {
+  pendingAreaRequest = null
+  focusRevision += 1
+  mapFlight.cancel()
+  stopNativeAnimation()
+}
+
+function handleUserInput(event: Event) {
+  if (event instanceof KeyboardEvent && !['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', '+', '-', '=', 'Escape'].includes(event.key)) return
+  cancelAreaRequest()
+}
+
+async function processAreaRequest() {
+  if (!map || !sceneReady || !pendingAreaRequest || !protectAreaLayer.isSelectionReady()) return
+  const request = pendingAreaRequest
+  const revision = focusRevision
+  let extent
+  let siteId: string
+  if (request.type === 'zone') {
+    const feature = FEATURE_BY_ID.get(request.targetId)
+    if (!feature || !props.regionsVisible || !props.visibleTypes.includes(feature.properties.BHDLX)) {
+      pendingAreaRequest = null
+      return
+    }
+    if (!protectAreaLayer.selectFeature(feature.id)) {
+      pendingAreaRequest = null
+      return
+    }
+    extent = getFeatureExtent(feature)
+    siteId = feature.properties.BHDBM
+  } else {
+    const site = SITE_BY_ID.get(request.targetId)
+    if (!site) { pendingAreaRequest = null; return }
+    if (protectAreaLayer.getSelection()?.properties.BHDBM !== site.id) protectAreaLayer.clearSelection()
+    extent = site.extent
+    siteId = site.id
+  }
+  pendingAreaRequest = null
+  await nextTick()
+  if (!map || !sceneReady || revision !== focusRevision || props.areaRequest?.id !== request.id) return
+  if (!Object.values(extent).every(Number.isFinite)) return
+  const container = mapContainer.value
+  if (!container) return
+  const viewport = container.getBoundingClientRect()
+  const overlays = Array.from(container.parentElement?.querySelectorAll<HTMLElement>('[data-map-overlay]') ?? [])
+    .map(element => {
+      const bounds = element.getBoundingClientRect()
+      return { kind: element.dataset.mapOverlay ?? '', left: bounds.left - viewport.left, right: bounds.right - viewport.left,
+        top: bounds.top - viewport.top, bottom: bounds.bottom - viewport.top }
+    })
+  const padding = getFocusPadding(viewport.width, viewport.height, overlays, map.getPitch())
+  try {
+    const target = getFocusView(map, new maptalks.Extent(extent.west, extent.south, extent.east, extent.north), padding)
+    mapFlight.flyTo(target, siteId)
+  } catch (error) {
+    mapFlight.cancel()
+    emit('error', error instanceof Error ? error.message : '保护区定位失败')
+  }
 }
 
 function createBaseLayer(baseMap: BaseMapConfig | null) {
@@ -58,12 +144,14 @@ function syncRasterSource(baseLayer?: maptalks.TileLayer) {
 }
 
 function executeCommand(type: SceneCommand) {
+  cancelAreaRequest()
   if (!map) return
-  if (type === 'zoom-in') map.setZoom(Math.min(MAP_VIEW_CONFIG.maxZoom, map.getZoom() + 1))
-  if (type === 'zoom-out') map.setZoom(Math.max(MAP_VIEW_CONFIG.minZoom, map.getZoom() - 1))
-  if (type === 'reset') map.animateTo(MAP_VIEW_CONFIG, { duration: MAP_VIEW_CONFIG.resetDuration })
+  stopMapAnimation(map)
+  if (type === 'zoom-in') nativeAnimation = map.animateTo({ zoom: Math.min(MAP_VIEW_CONFIG.maxZoom, map.getZoom() + 1) })
+  if (type === 'zoom-out') nativeAnimation = map.animateTo({ zoom: Math.max(MAP_VIEW_CONFIG.minZoom, map.getZoom() - 1) })
+  if (type === 'reset') nativeAnimation = map.animateTo(MAP_VIEW_CONFIG, { duration: MAP_VIEW_CONFIG.resetDuration })
   if (type === 'set-2d' || type === 'set-3d') {
-    map.animateTo(
+    nativeAnimation = map.animateTo(
       { pitch: type === 'set-2d' ? 0 : MAP_VIEW_CONFIG.pitch, bearing: MAP_VIEW_CONFIG.bearing },
       { duration: MAP_VIEW_CONFIG.dimensionDuration },
     )
@@ -87,7 +175,11 @@ onMounted(() => {
       attribution: { content: '底图', position: { left: 12, bottom: 0 } },
     })
     map.on('zoomend moveend pitchend rotateend', reportView)
+    map.on('resize', cancelAreaRequest)
+    inputContainer = mapContainer.value
+    inputEvents.forEach(event => inputContainer?.addEventListener(event, handleUserInput, { capture: true, passive: true }))
     map.on('click', (event: any) => {
+      cancelAreaRequest()
       if (!protectAreaLayer.identify(event.coordinate).length) protectAreaLayer.clearSelection()
     })
     syncRasterSource(baseLayer)
@@ -98,7 +190,10 @@ onMounted(() => {
 })
 
 watch(() => props.command.id, () => executeCommand(props.command.type))
-watch(() => props.regionsVisible, protectAreaLayer.setVisible)
+watch(() => props.regionsVisible, visible => {
+  if (!visible) cancelAreaRequest()
+  protectAreaLayer.setVisible(visible)
+})
 watch(() => props.baseMap, baseMap => {
   if (!map) return
   try {
@@ -110,20 +205,38 @@ watch(() => props.baseMap, baseMap => {
     emit('error', error instanceof Error ? error.message : '底图切换失败')
   }
 })
-watch(() => props.visibleTypes, protectAreaLayer.scheduleRebuild, { deep: true })
+watch(() => props.visibleTypes, types => {
+  const selection = protectAreaLayer.getSelection()
+  if (selection && !types.includes(selection.properties.BHDLX)) cancelAreaRequest()
+  protectAreaLayer.scheduleRebuild()
+}, { deep: true })
+watch(() => props.areaRequest, request => {
+  cancelAreaRequest()
+  pendingAreaRequest = request
+  void processAreaRequest()
+}, { flush: 'post' })
 
 onBeforeUnmount(() => {
+  sceneReady = false
+  pendingAreaRequest = null
+  focusRevision += 1
+  inputEvents.forEach(event => inputContainer?.removeEventListener(event, handleUserInput, true))
+  inputContainer = null
+  map?.off('resize', cancelAreaRequest)
+  mapFlight.dispose()
+  stopNativeAnimation()
   protectAreaLayer.dispose()
   map?.remove()
   map = null
 })
 </script>
 
-<template><div ref="mapContainer" class="map-canvas" aria-label="广西原生境保护区三维地图"></div></template>
+<template><div ref="mapContainer" class="map-canvas" tabindex="0" aria-label="广西原生境保护区三维地图"></div></template>
 
 <style scoped>
 .map-canvas { position: absolute; inset: 0; cursor: grab; background: #15201d; }
 .map-canvas:active { cursor: grabbing; }.map-canvas.is-picking { cursor: pointer; }
+.map-canvas:focus-visible { outline:2px solid var(--mint);outline-offset:-2px }
 :deep(.maptalks-canvas-layer), :deep(.maptalks-front-layer) { outline: none; }
 :deep(.maptalks-attribution) { max-width:calc(100vw - 24px);padding:1px 4px;color:#b9c5be;background:rgba(16,27,24,.8);font-size:9px;line-height:1.5 }
 :deep(.maptalks-attribution a) { color:inherit }

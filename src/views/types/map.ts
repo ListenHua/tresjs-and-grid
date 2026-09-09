@@ -31,6 +31,7 @@ export interface ProtectAreaProperties {
 }
 
 export interface ProtectAreaFeature {
+  id: string
   type: 'Feature'
   properties: ProtectAreaProperties
   geometry: { type: 'MultiPolygon'; coordinates: number[][][][] }
@@ -49,3 +50,9 @@ export interface MapViewState {
 }
 
 export type SceneCommand = 'zoom-in' | 'zoom-out' | 'reset' | 'set-2d' | 'set-3d'
+
+export interface AreaRequest {
+  id: number
+  type: 'site' | 'zone'
+  targetId: string
+}

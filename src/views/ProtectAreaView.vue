@@ -3,7 +3,9 @@ import { computed, reactive, ref } from 'vue'
 import MapControls from './components/MapControls.vue'
 import MapScene from './components/MapScene.vue'
 import SceneLegend from './components/SceneLegend.vue'
-import type { MapViewState, ProtectAreaFeature, ProtectAreaType, SceneCommand } from './types/map'
+import ProtectAreaList from './components/ProtectAreaList.vue'
+import { FEATURE_BY_ID, PROTECT_AREA_SITES } from './data/protectAreas'
+import type { AreaRequest, MapViewState, ProtectAreaFeature, ProtectAreaType, SceneCommand } from './types/map'
 import { AREA_TYPE_COLORS, AREA_TYPE_STYLES, BASE_MAPS, MAP_VIEW_CONFIG } from './config'
 
 const status = ref<'loading' | 'ready' | 'error'>('loading')
@@ -16,6 +18,8 @@ const baseMapId = ref(BASE_MAPS[0]?.id ?? '')
 const activeBaseMap = computed(() => BASE_MAPS.find(item => item.id === baseMapId.value) ?? null)
 const visibleTypes = ref<ProtectAreaType[]>(AREA_TYPE_STYLES.map(item => item.type))
 const command = reactive({ id: 0, type: 'reset' as SceneCommand })
+const areaRequest = ref<AreaRequest | null>(null)
+let areaRequestId = 0
 const view = reactive<MapViewState>({
   zoom: MAP_VIEW_CONFIG.zoom,
   pitch: MAP_VIEW_CONFIG.pitch,
@@ -26,6 +30,21 @@ const activeArea = computed(() => regionsVisible.value ? selected.value ?? hover
 function runCommand(type: SceneCommand) { command.type = type; command.id += 1 }
 function setReady() { status.value = 'ready'; statusMessage.value = '' }
 function setError(message: string) { status.value = 'error'; statusMessage.value = message }
+function locateSite(id: string) {
+  hovered.value = null
+  regionsVisible.value = true
+  areaRequest.value = { id: ++areaRequestId, type: 'site', targetId: id }
+}
+function selectZone(id: string) {
+  const feature = FEATURE_BY_ID.get(id)
+  if (!feature) return
+  hovered.value = null
+  regionsVisible.value = true
+  if (!visibleTypes.value.includes(feature.properties.BHDLX)) {
+    visibleTypes.value = [...visibleTypes.value, feature.properties.BHDLX]
+  }
+  areaRequest.value = { id: ++areaRequestId, type: 'zone', targetId: id }
+}
 function toggleType(type: ProtectAreaType) {
   visibleTypes.value = visibleTypes.value.includes(type)
     ? visibleTypes.value.filter(item => item !== type)
@@ -35,16 +54,20 @@ function toggleType(type: ProtectAreaType) {
 
 <template>
   <main class="planning-workspace">
-    <MapScene :command="command" :regions-visible="regionsVisible" :base-map="activeBaseMap" :visible-types="visibleTypes"
+    <MapScene :command="command" :area-request="areaRequest" :regions-visible="regionsVisible" :base-map="activeBaseMap" :visible-types="visibleTypes"
       @ready="setReady" @error="setError" @raster-error="rasterError = $event"
       @hover="hovered = $event" @select="selected = $event" @view="Object.assign(view, $event)" />
     <div class="map-shade" aria-hidden="true"></div>
 
-    <SceneLegend v-model:regions-visible="regionsVisible"
-      :visible-types="visibleTypes" :status="rasterError && status === 'ready' ? 'error' : status"
-      :status-message="status === 'ready' && rasterError ? rasterError : statusMessage" @toggle-type="toggleType" />
+    <div class="left-panels">
+      <ProtectAreaList data-map-overlay="list" :sites="PROTECT_AREA_SITES" :selected-feature-id="selected?.id ?? null"
+        :regions-visible="regionsVisible" :visible-types="visibleTypes" @locate-site="locateSite" @select-zone="selectZone" />
+      <SceneLegend v-model:regions-visible="regionsVisible" data-map-overlay="legend"
+        :visible-types="visibleTypes" :status="rasterError && status === 'ready' ? 'error' : status"
+        :status-message="status === 'ready' && rasterError ? rasterError : statusMessage" @toggle-type="toggleType" />
+    </div>
 
-    <section v-if="activeArea" class="region-card" aria-label="功能区信息" aria-live="polite">
+    <section v-if="activeArea" class="region-card" data-map-overlay="details" aria-label="功能区信息" aria-live="polite">
       <div class="region-heading">
         <span>{{ activeArea.properties.BHDBM }}</span>
         <em><i :style="{ background: AREA_TYPE_COLORS[activeArea.properties.BHDLX] }"></i>{{ activeArea.properties.BHDLX }}</em>
@@ -66,6 +89,9 @@ function toggleType(type: ProtectAreaType) {
 <style scoped>
 .planning-workspace { --ink:#14201d;--paper:#f2f0e9;--coral:#e35d3f;--mint:#b9f27c;position:relative;width:100%;height:100%;overflow:hidden;color:var(--paper);background:var(--ink) }
 .map-shade { position:absolute;inset:0;z-index:1;pointer-events:none;background:linear-gradient(0deg,rgba(9,16,14,.36),transparent 25%) }
+.left-panels { position:absolute;top:20px;bottom:24px;left:20px;z-index:2;display:flex;flex-direction:column;justify-content:space-between;gap:12px;width:280px;max-width:calc(100% - 88px);min-height:0;pointer-events:none }
+.left-panels > * { pointer-events:auto }
+@media (max-width:900px) { .left-panels { top:12px;bottom:16px;left:12px } }
 .region-card { position:absolute;right:24px;bottom:24px;z-index:2;width:286px;max-height:calc(100dvh - 284px);overflow-y:auto;padding:18px;color:var(--ink);background:rgba(242,240,233,.96);border-top:3px solid var(--coral);box-shadow:5px 5px 0 rgba(227,93,63,.65);backdrop-filter:blur(12px) }
 .region-heading { display:flex;flex-wrap:wrap;justify-content:space-between;align-items:center;gap:8px;color:var(--coral);font:700 10px/1.3 monospace }
 .region-heading em { display:flex;align-items:center;gap:5px;padding:4px 6px;color:#38584d;background:#d9e3dc;font-style:normal }
