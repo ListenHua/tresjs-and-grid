@@ -65,6 +65,19 @@ export const MAP_FLIGHT_CONFIG = {
   rasterRefreshInterval: 450,
 }
 
+export const MAP_FOG_CONFIG = {
+  enabled: true,
+  closeDuration: 0.45,
+  travelMinDuration: 0.5,
+  travelMaxDuration: 0.9,
+  revealDuration: 0.5,
+  approachDuration: 0.8,
+  approachZoomOffset: 1.25,
+  maxWaitMs: 700,
+  cancelDuration: 0.18,
+  fogEase: 'power2.inOut',
+}
+
 export const EXTRUSION_CONFIG = {
   height: 80,
   shininess: 14,

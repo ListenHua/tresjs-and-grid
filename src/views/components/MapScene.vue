@@ -6,6 +6,8 @@ import { useProtectAreaLayer } from '../hooks/useProtectAreaLayer'
 import { stopMapAnimation, useMapFlight } from '../hooks/useMapFlight'
 import { resolveRasterSource } from '../utils/RasterSource'
 import { getFocusPadding, getFocusView } from '../utils/mapNavigation'
+import { waitForMapArrival } from '../utils/waitForMapArrival'
+import MapFlightFog from './MapFlightFog.vue'
 import { FEATURE_BY_ID, SITE_BY_ID, getFeatureExtent } from '../data/protectAreas'
 import { MAP_VIEW_CONFIG } from '../config'
 import type { AreaRequest, BaseMapConfig, MapViewState, ProtectAreaFeature, ProtectAreaType, SceneCommand } from '../types/map'
@@ -27,6 +29,7 @@ const emit = defineEmits<{
 }>()
 
 const mapContainer = ref<HTMLElement | null>(null)
+const flightFog = ref<InstanceType<typeof MapFlightFog> | null>(null)
 let map: maptalks.Map | null = null
 let sceneReady = false
 let pendingAreaRequest = props.areaRequest
@@ -52,6 +55,13 @@ const protectAreaLayer = useProtectAreaLayer({
 const mapFlight = useMapFlight({
   getMap: () => map,
   onFlightChange: protectAreaLayer.setFlightActive,
+  onFogChange: coverage => flightFog.value?.setCoverage(coverage),
+  canUseFog: () => flightFog.value?.isReady() ?? false,
+  prepareArrival: async (siteId, signal) => {
+    if (!map || signal.aborted) return
+    protectAreaLayer.refreshRasterNow()
+    await waitForMapArrival(map, () => protectAreaLayer.isSiteRasterReady(siteId), signal)
+  },
   onSettled: () => {
     protectAreaLayer.refreshRaster()
     reportView()
@@ -89,17 +99,19 @@ async function processAreaRequest() {
     const feature = FEATURE_BY_ID.get(request.targetId)
     if (!feature || !props.regionsVisible || !props.visibleTypes.includes(feature.properties.BHDLX)) {
       pendingAreaRequest = null
+      mapFlight.cancel()
       return
     }
     if (!protectAreaLayer.selectFeature(feature.id)) {
       pendingAreaRequest = null
+      mapFlight.cancel()
       return
     }
     extent = getFeatureExtent(feature)
     siteId = feature.properties.BHDBM
   } else {
     const site = SITE_BY_ID.get(request.targetId)
-    if (!site) { pendingAreaRequest = null; return }
+    if (!site) { pendingAreaRequest = null; mapFlight.cancel(); return }
     if (protectAreaLayer.getSelection()?.properties.BHDBM !== site.id) protectAreaLayer.clearSelection()
     extent = site.extent
     siteId = site.id
@@ -107,9 +119,9 @@ async function processAreaRequest() {
   pendingAreaRequest = null
   await nextTick()
   if (!map || !sceneReady || revision !== focusRevision || props.areaRequest?.id !== request.id) return
-  if (!Object.values(extent).every(Number.isFinite)) return
+  if (!Object.values(extent).every(Number.isFinite)) { mapFlight.cancel(); return }
   const container = mapContainer.value
-  if (!container) return
+  if (!container) { mapFlight.cancel(); return }
   const viewport = container.getBoundingClientRect()
   const overlays = Array.from(container.parentElement?.querySelectorAll<HTMLElement>('[data-map-overlay]') ?? [])
     .map(element => {
@@ -185,6 +197,7 @@ onMounted(() => {
     syncRasterSource(baseLayer)
     protectAreaLayer.createLayer(map)
   } catch (error) {
+    cancelAreaRequest()
     emit('error', error instanceof Error ? error.message : '地图初始化失败')
   }
 })
@@ -211,7 +224,10 @@ watch(() => props.visibleTypes, types => {
   protectAreaLayer.scheduleRebuild()
 }, { deep: true })
 watch(() => props.areaRequest, request => {
-  cancelAreaRequest()
+  if (!request) { cancelAreaRequest(); return }
+  focusRevision += 1
+  mapFlight.suspend()
+  stopNativeAnimation()
   pendingAreaRequest = request
   void processAreaRequest()
 }, { flush: 'post' })
@@ -231,7 +247,10 @@ onBeforeUnmount(() => {
 })
 </script>
 
-<template><div ref="mapContainer" class="map-canvas" tabindex="0" aria-label="广西原生境保护区三维地图"></div></template>
+<template>
+  <div ref="mapContainer" class="map-canvas" tabindex="0" aria-label="广西原生境保护区三维地图"></div>
+  <MapFlightFog ref="flightFog" />
+</template>
 
 <style scoped>
 .map-canvas { position: absolute; inset: 0; cursor: grab; background: #15201d; }

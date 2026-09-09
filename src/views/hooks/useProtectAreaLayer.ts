@@ -809,6 +809,23 @@ export function useProtectAreaLayer(options: ProtectAreaLayerOptions) {
     }
   }
 
+  function refreshRasterNow() {
+    clearTimeout(detailTimer)
+    detailTimer = undefined
+    lastFlightRasterRefresh = -Infinity
+    refreshRasterTextures()
+  }
+
+  function isSiteRasterReady(siteId: string) {
+    if (!rasterSource || !layer?.isVisible()) return true
+    if (!isSelectionReady()) return false
+    const zoom = rasterSource.getZoom()
+    if (zoom === null) return true
+    return [...featureById.entries()]
+      .filter(([id, feature]) => feature.properties.BHDBM === siteId && (!selectedId || id === selectedId))
+      .every(([id]) => appliedRasterStates.get(id)?.requestedZoom === zoom || failedRasterIds.has(id))
+  }
+
   function selectFeature(id: string) {
     if (!isSelectionReady() || !layer?.isVisible()) return false
     const feature = featureById.get(id)
@@ -848,5 +865,6 @@ export function useProtectAreaLayer(options: ProtectAreaLayerOptions) {
   }
 
   return { createLayer, identify, setVisible, setRasterSource, clearSelection, selectFeature, getSelection,
-    isSelectionReady, scheduleRebuild, setFlightActive, refreshRaster: refreshRasterTextures, dispose }
+    isSelectionReady, scheduleRebuild, setFlightActive, refreshRaster: refreshRasterTextures,
+    refreshRasterNow, isSiteRasterReady, dispose }
 }
