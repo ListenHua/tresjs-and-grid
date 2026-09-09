@@ -40,7 +40,7 @@ export const MAP_VIEW_CONFIG = {
   pitch: 46,
   bearing: 0,
   minZoom: 4,
-  maxZoom: 16,
+  maxZoom: 18,
   projection: 'EPSG:3857',
   resetDuration: 650,
   dimensionDuration: 520,
@@ -61,7 +61,7 @@ export const MAP_FLIGHT_CONFIG = {
   approachEase: 'power2.inOut',
   centerTolerance: 1,
   zoomTolerance: 0.005,
-  zoomOffset: -0.75,
+  zoomOffset: -0.5,
   rasterRefreshInterval: 450,
 }
 

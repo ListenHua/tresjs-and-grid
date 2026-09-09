@@ -67,7 +67,8 @@ function toggleType(type: ProtectAreaType) {
         :status-message="status === 'ready' && rasterError ? rasterError : statusMessage" @toggle-type="toggleType" />
     </div>
 
-    <section v-if="activeArea" class="region-card" data-map-overlay="details" aria-label="功能区信息" aria-live="polite">
+    <section v-if="activeArea" class="region-card" data-map-overlay="details" aria-label="功能区信息" aria-live="polite"
+      :style="{ '--region-color': AREA_TYPE_COLORS[activeArea.properties.BHDLX], '--region-shadow-color': `${AREA_TYPE_COLORS[activeArea.properties.BHDLX]}a6` }">
       <div class="region-heading">
         <span>{{ activeArea.properties.BHDBM }}</span>
         <em><i :style="{ background: AREA_TYPE_COLORS[activeArea.properties.BHDLX] }"></i>{{ activeArea.properties.BHDLX }}</em>
@@ -79,7 +80,6 @@ function toggleType(type: ProtectAreaType) {
         <div><dt>所属城市</dt><dd class="text-value">{{ activeArea.properties.CXZQMC }}</dd></div>
         <div><dt>区县</dt><dd class="text-value">{{ activeArea.properties.FXZQMC }}</dd></div>
       </dl>
-      <p :class="{ locked: !!selected }">{{ selected ? '已锁定分区 · 点击空白处取消' : '点击分区锁定详情与地形' }}</p>
     </section>
 
     <MapControls v-model:base-map-id="baseMapId" :view="view" :base-maps="BASE_MAPS" @command="runCommand" />
@@ -92,8 +92,8 @@ function toggleType(type: ProtectAreaType) {
 .left-panels { position:absolute;top:20px;bottom:24px;left:20px;z-index:2;display:flex;flex-direction:column;justify-content:space-between;gap:12px;width:280px;max-width:calc(100% - 88px);min-height:0;pointer-events:none }
 .left-panels > * { pointer-events:auto }
 @media (max-width:900px) { .left-panels { top:12px;bottom:16px;left:12px } }
-.region-card { position:absolute;right:24px;bottom:24px;z-index:2;width:286px;max-height:calc(100dvh - 284px);overflow-y:auto;padding:18px;color:var(--ink);background:rgba(242,240,233,.96);border-top:3px solid var(--coral);box-shadow:5px 5px 0 rgba(227,93,63,.65);backdrop-filter:blur(12px) }
-.region-heading { display:flex;flex-wrap:wrap;justify-content:space-between;align-items:center;gap:8px;color:var(--coral);font:700 10px/1.3 monospace }
+.region-card { position:absolute;right:24px;bottom:24px;z-index:2;width:286px;max-height:calc(100dvh - 284px);overflow-y:auto;padding:18px;color:var(--ink);background:rgba(242,240,233,.96);border-top:3px solid var(--region-color);box-shadow:5px 5px 0 var(--region-shadow-color);backdrop-filter:blur(12px) }
+.region-heading { display:flex;flex-wrap:wrap;justify-content:space-between;align-items:center;gap:8px;color:var(--region-color);font:700 10px/1.3 monospace }
 .region-heading em { display:flex;align-items:center;gap:5px;padding:4px 6px;color:#38584d;background:#d9e3dc;font-style:normal }
 .region-heading i { width:6px;height:6px }
 .region-card h2 { margin:12px 0 15px;font-family:"Noto Serif SC","Songti SC",serif;font-size:18px;line-height:1.5;font-weight:600;overflow-wrap:anywhere }
@@ -103,8 +103,6 @@ function toggleType(type: ProtectAreaType) {
 .region-card dd { margin:5px 0 0;font:600 18px/1.2 monospace }
 .region-card dd.text-value { font-family:"Noto Sans SC","Microsoft YaHei",sans-serif;font-size:12px;line-height:1.5;overflow-wrap:anywhere }
 .region-card dd small { margin-left:4px;font-size:10px }
-.region-card p { margin:15px 0 0;padding-top:10px;border-top:1px solid #d4d9d3;color:#63716a;font-size:10px;line-height:1.5 }
-.region-card p.locked { color:#38584d }
 @media (max-width:700px) { .region-card { right:16px;bottom:16px;width:min(286px,calc(100% - 236px));padding:14px }.region-card h2 { font-size:16px } }
-@media (max-width:480px) { .region-card { width:calc(100% - 188px);padding:12px;max-height:calc(100dvh - 266px) }.region-heading { font-size:9px }.region-card h2 { margin:10px 0;font-size:14px }.region-card dl { grid-template-columns:1fr;gap:9px }.region-card dd { font-size:16px }.region-card dd.text-value { font-size:11px }.region-card p { font-size:9px } }
+@media (max-width:480px) { .region-card { width:calc(100% - 188px);padding:12px;max-height:calc(100dvh - 266px) }.region-heading { font-size:9px }.region-card h2 { margin:10px 0;font-size:14px }.region-card dl { grid-template-columns:1fr;gap:9px }.region-card dd { font-size:16px }.region-card dd.text-value { font-size:11px } }
 </style>
