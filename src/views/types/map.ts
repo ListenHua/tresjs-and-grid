@@ -4,6 +4,7 @@ export interface BaseMapConfig {
   id: string
   name: string
   description?: string
+  previewImage?: string
   options: TileLayerOptionsType | null
 }
 

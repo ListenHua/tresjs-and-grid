@@ -20,6 +20,11 @@ const baseMapButton = ref<HTMLButtonElement | null>(null)
 const baseMapPanel = ref<HTMLElement | null>(null)
 const baseMapMenuOpen = ref(false)
 const baseMapPanelId = useId()
+const failedPreviews = ref(new Set<string>())
+
+function markPreviewFailed(source?: string) {
+  if (source) failedPreviews.value.add(source)
+}
 
 async function toggleBaseMaps() {
   baseMapMenuOpen.value = !baseMapMenuOpen.value
@@ -75,13 +80,12 @@ onBeforeUnmount(() => document.removeEventListener('pointerdown', closeOnOutside
         :aria-controls="baseMapPanelId" aria-haspopup="dialog" :disabled="baseMaps.length === 0"
         @click="toggleBaseMaps"><Layers3 :size="19" /></button>
       <div v-if="baseMapMenuOpen" :id="baseMapPanelId" ref="baseMapPanel" class="base-map-panel" role="dialog" aria-label="选择底图">
-        <div class="base-map-heading"><span>选择底图</span><small>{{ baseMaps.length }} 种底图</small></div>
         <div class="base-map-options">
           <button v-for="item in baseMaps" :key="item.id" class="base-map-option" type="button"
-            :aria-pressed="item.id === baseMapId" @click="selectBaseMap(item.id)">
-            <Map :size="18" />
-            <span><b>{{ item.name }}</b><small v-if="item.description">{{ item.description }}</small></span>
-            <Check v-if="item.id === baseMapId" :size="15" />
+            :aria-label="item.name" :aria-pressed="item.id === baseMapId" @click="selectBaseMap(item.id)">
+            <img v-if="item.previewImage && !failedPreviews.has(item.previewImage)" class="base-map-preview"
+              :src="item.previewImage" alt="" aria-hidden="true" draggable="false" @error="markPreviewFailed(item.previewImage)" />
+            <span v-if="item.id === baseMapId" class="base-map-selected" aria-hidden="true"><Check :size="10" :stroke-width="3" /></span>
           </button>
         </div>
       </div>
@@ -96,19 +100,15 @@ onBeforeUnmount(() => document.removeEventListener('pointerdown', closeOnOutside
 .map-controls > button:disabled,.base-map-trigger:disabled { opacity:.3;cursor:not-allowed }
 .base-map-control { position:relative;border-top:1px solid rgba(242,240,233,.12) }
 .base-map-trigger[aria-expanded="true"] { color:var(--mint);background:rgba(185,242,124,.08) }
-.base-map-panel { position:absolute;right:calc(100% + 12px);top:50%;display:flex;flex-direction:column;width:248px;max-width:calc(100vw - 92px);max-height:min(360px,calc(100dvh - 48px));border:1px solid rgba(242,240,233,.18);background:rgba(16,27,24,.97);box-shadow:0 10px 30px rgba(0,0,0,.25);transform:translateY(-50%) }
-.base-map-heading { display:flex;flex-shrink:0;align-items:center;justify-content:space-between;gap:12px;padding:13px 14px;border-bottom:1px solid rgba(242,240,233,.1);font-size:12px;font-weight:600 }
-.base-map-heading small { color:#8b9b95;font-size:10px;font-weight:400 }
-.base-map-options { display:grid;gap:5px;min-height:0;overflow-y:auto;padding:8px;overscroll-behavior:contain;scrollbar-width:thin }
-.base-map-option { display:grid;grid-template-columns:18px minmax(0,1fr) 15px;align-items:center;gap:10px;width:100%;min-height:56px;padding:10px;border:1px solid transparent;border-radius:2px;color:var(--paper);text-align:left;background:transparent;cursor:pointer }
-.base-map-option > svg:first-child { color:#94a49c }
-.base-map-option b { display:block;font-size:12px;font-weight:500;overflow-wrap:anywhere }
-.base-map-option small { display:block;margin-top:5px;color:#8b9b95;font-size:10px;line-height:1.4;overflow-wrap:anywhere }
-.base-map-option[aria-pressed="true"] { border-color:rgba(185,242,124,.28);color:var(--mint);background:rgba(185,242,124,.08) }
-.base-map-option[aria-pressed="true"] > svg { color:var(--mint) }
+.base-map-panel { position:absolute;right:calc(100% + 12px);top:50%;display:flex;flex-direction:column;box-sizing:border-box;width:max-content;max-width:calc(100vw - 92px);max-height:min(360px,calc(100dvh - 48px));border:1px solid rgba(242,240,233,.18);background:rgba(16,27,24,.97);box-shadow:0 10px 30px rgba(0,0,0,.25);transform:translateY(-50%) }
+.base-map-options { display:grid;grid-template-columns:40px;grid-auto-rows:40px;gap:8px;min-height:0;overflow-y:auto;padding:8px;overscroll-behavior:contain;scrollbar-width:thin }
+.base-map-option { position:relative;box-sizing:border-box;width:40px;height:40px;overflow:hidden;padding:0;border:2px solid rgba(242,240,233,.18);border-radius:3px;background:#243830;cursor:pointer;transition:border-color 150ms ease }
+.base-map-preview { display:block;width:100%;height:100%;object-fit:cover }
+.base-map-option[aria-pressed="true"] { border-color:var(--mint) }
+.base-map-selected { position:absolute;right:2px;bottom:2px;display:grid;place-items:center;width:14px;height:14px;border-radius:50%;color:var(--ink);background:var(--mint);box-shadow:0 1px 5px rgba(0,0,0,.3) }
 button:focus-visible { outline:2px solid var(--mint);outline-offset:2px }
-@media (hover:hover) { .map-controls > button:not(:disabled):hover,.base-map-trigger:not(:disabled):hover,.base-map-option:hover { color:var(--mint);background:rgba(185,242,124,.1) } }
+@media (hover:hover) { .map-controls > button:not(:disabled):hover,.base-map-trigger:not(:disabled):hover { color:var(--mint);background:rgba(185,242,124,.1) }.base-map-option:not([aria-pressed="true"]):hover { border-color:rgba(185,242,124,.65) } }
 @media (max-width:700px) { .map-controls { top:12px;right:12px } }
 @media (max-height:480px) { .base-map-panel { top:auto;bottom:0;max-height:210px;transform:none } }
-@media (prefers-reduced-motion:reduce) { .map-controls > button,.base-map-trigger { transition:none } }
+@media (prefers-reduced-motion:reduce) { .map-controls > button,.base-map-trigger,.base-map-option { transition:none } }
 </style>

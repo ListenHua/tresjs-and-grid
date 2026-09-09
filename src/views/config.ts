@@ -1,13 +1,16 @@
 import type { BaseMapConfig, ProtectAreaType } from './types/map'
+import satellitePreview from '../assets/images/map1.png'
+import streetsPreview from '../assets/images/map2.png'
 
 export const BASE_MAPS: BaseMapConfig[] = [
   {
     id: 'satellite',
     name: '卫星影像',
-    description: 'Esri · 地表影像',
+    description: '高德 · 卫星影像',
+    previewImage: satellitePreview,
     options: {
-      urlTemplate: 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
-      attribution: 'Tiles © Esri',
+      urlTemplate: 'https://webst01.is.autonavi.com/appmaptile?style=6&x={x}&y={y}&z={z}',
+      attribution: '© 高德地图',
       crossOrigin: 'anonymous',
     },
   },
@@ -15,6 +18,7 @@ export const BASE_MAPS: BaseMapConfig[] = [
     id: 'streets',
     name: '街道地图',
     description: 'OpenStreetMap · 道路与地名',
+    previewImage: streetsPreview,
     options: {
       urlTemplate: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
       attribution: '© <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener noreferrer">OpenStreetMap</a> contributors',
@@ -35,8 +39,8 @@ export const MAP_VIEW_CONFIG = {
   zoom: 7.05,
   pitch: 46,
   bearing: 0,
-  minZoom: 3,
-  maxZoom: 19,
+  minZoom: 4,
+  maxZoom: 16,
   projection: 'EPSG:3857',
   resetDuration: 650,
   dimensionDuration: 520,
@@ -111,10 +115,7 @@ export const AREA_TYPE_FILL_ORDER: Record<ProtectAreaType, number> = {
 }
 
 export const INTERACTION_COLORS = {
-  selected: '#c8ff8c',
-  selectedEmissive: '#274b35',
   rasterHoverTint: '#fff1d8',
-  rasterSelectedTint: '#e9ffdc',
 }
 
 export const THREE_LAYER_CONFIG = {

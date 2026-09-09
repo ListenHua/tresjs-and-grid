@@ -315,18 +315,14 @@ export function useProtectAreaLayer(options: ProtectAreaLayerOptions) {
     const outlineMaterial = outlineMaterials.get(id)
     const feature = featureById.get(id)
     if (!sideMaterial || !topMaterial || !outlineMaterial || !feature) return
-    const color = id === selectedId
-      ? INTERACTION_COLORS.selected
-      : AREA_TYPE_COLORS[feature.properties.BHDLX]
+    const color = AREA_TYPE_COLORS[feature.properties.BHDLX]
     sideMaterial.color.set(color)
-    sideMaterial.emissive.set(id === selectedId ? INTERACTION_COLORS.selectedEmissive : '#000000')
+    sideMaterial.emissive.set('#000000')
     sideMaterial.needsUpdate = true
     outlineMaterial.color.set(color)
     outlineMaterial.needsUpdate = true
     topMaterial.color.set(topMaterial.map
-      ? id === selectedId
-        ? INTERACTION_COLORS.rasterSelectedTint
-        : id === hoveredId ? INTERACTION_COLORS.rasterHoverTint : '#ffffff'
+      ? id === hoveredId && id !== selectedId ? INTERACTION_COLORS.rasterHoverTint : '#ffffff'
       : color)
     topMaterial.needsUpdate = true
     layer?.renderScene()
