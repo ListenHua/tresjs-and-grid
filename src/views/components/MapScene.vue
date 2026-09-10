@@ -1,7 +1,6 @@
 <script setup lang="ts">
 import { nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import * as maptalks from 'maptalks'
-import { gsap } from 'gsap'
 import 'maptalks/dist/maptalks.css'
 import { useProtectAreaLayer } from '../hooks/useProtectAreaLayer'
 import { usePixelMapLayer } from '../hooks/usePixelMapLayer'
@@ -11,8 +10,9 @@ import { getFocusPadding, getFocusView, isValidFocusExtent } from '../utils/mapN
 import type { GeographicExtent } from '../utils/RasterAtlasManager'
 import { waitForMapArrival } from '../utils/waitForMapArrival'
 import MapFlightFog from './MapFlightFog.vue'
+import PixelMapFog from './PixelMapFog.vue'
 import { FEATURE_BY_ID, SITE_BY_ID, getFeatureExtent } from '../data/protectAreas'
-import { MAP_VIEW_CONFIG, PIXEL_MAP_CONFIG } from '../config'
+import { MAP_VIEW_CONFIG, PIXEL_MAP_CONFIG, PIXEL_FOG_CONFIG } from '../config'
 import type { AreaRequest, BaseMapConfig, MapRenderMode, MapViewState, ProtectAreaFeature, ProtectAreaType, SceneCommand } from '../types/map'
 
 const props = defineProps<{
@@ -39,11 +39,12 @@ const emit = defineEmits<{
 const mapContainer = ref<HTMLElement | null>(null)
 const flightFog = ref<InstanceType<typeof MapFlightFog> | null>(null)
 const canvasVisible = ref(false)
-const modeVeil = ref<HTMLElement | null>(null)
+const pixelFog = ref<InstanceType<typeof PixelMapFog> | null>(null)
+const modeSwitching = ref(false)
+let flightCoverage = 0
 let activeMode: MapRenderMode = 'standard'
 let modeError: string | null = null
 let modeRevision = 0
-let modeAnimation: gsap.core.Tween | null = null
 let disposed = false
 let map: maptalks.Map | null = null
 let sceneReady = false
@@ -90,8 +91,13 @@ const pixelLayer = usePixelMapLayer({
 const mapFlight = useMapFlight({
   getMap: () => map,
   onFlightChange: active => { protectAreaLayer.setFlightActive(active); pixelLayer.setFlightActive(active) },
-  onFogChange: coverage => flightFog.value?.setCoverage(coverage),
-  canUseFog: () => flightFog.value?.isReady() ?? false,
+  onFogChange: coverage => { flightCoverage = coverage; publishFog() },
+  canUseFog: () => !modeSwitching.value && (activeMode === 'pixel'
+    ? pixelFog.value?.isReady() ?? false : flightFog.value?.isReady() ?? false),
+  getFogConfig: () => activeMode === 'pixel' ? {
+    ...PIXEL_FOG_CONFIG, approachZoomOffset: 0, approachDuration: 0,
+    maxWaitMs: PIXEL_MAP_CONFIG.workerTimeout,
+  } : {},
   prepareArrival: async (siteId, signal) => {
     if (!map || signal.aborted) return
     if (activeMode === 'pixel') {
@@ -109,66 +115,62 @@ const mapFlight = useMapFlight({
   },
 })
 
-function fadeModeVeil(opacity: number) {
-  modeAnimation?.kill()
-  if (!modeVeil.value) return Promise.resolve()
-  const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches
-  return new Promise<void>(resolve => {
-    modeAnimation = gsap.to(modeVeil.value, {
-      opacity, duration: reducedMotion ? 0 : PIXEL_MAP_CONFIG.transitionDuration / 2,
-      ease: 'power2.inOut', onComplete: resolve, onInterrupt: resolve,
-    })
-  })
+function publishFog() {
+  pixelFog.value?.setCoverage(activeMode === 'pixel' ? flightCoverage : 0)
+  flightFog.value?.setCoverage(activeMode === 'standard' ? flightCoverage : 0)
 }
 
 async function switchRenderMode(mode: MapRenderMode) {
   if (!map || !sceneReady || disposed) return
   const revision = ++modeRevision
-  modeAnimation?.kill()
-  cancelAreaRequest()
+  modeSwitching.value = true
+  cancelAreaRequest(true)
   emit('mode-loading', true)
+  const stale = () => revision !== modeRevision || disposed
   try {
     if (mode === 'pixel') {
+      // Entry uses the map's own cell reveal, without a fog transition.
       modeError = null
+      if (activeMode === 'pixel') {
+        pixelLayer.setActive(true)
+        return
+      }
       pixelLayer.setActive(false)
+      const ready = await pixelLayer.prepare(map, true)
+      if (!ready || stale()) return
       protectAreaLayer.setRasterSource(null)
       protectAreaLayer.setActive(false)
       map.removeBaseLayer()
-      const ready = await pixelLayer.prepare(map, true)
-      if (!ready || revision !== modeRevision || disposed) return
+      pixelLayer.setActive(true)
+      activeMode = 'pixel'
+      pixelLayer.startReveal()
     } else {
       pixelLayer.setActive(false)
-    }
-    await fadeModeVeil(1)
-    if (!map || revision !== modeRevision || disposed) return
-    activeMode = mode
-    if (mode === 'pixel') {
-      pixelLayer.setActive(true)
-    } else {
       const baseLayer = createBaseLayer(props.baseMap)
       if (baseLayer) map.setBaseLayer(baseLayer)
       else map.removeBaseLayer()
       syncRasterSource(baseLayer)
       protectAreaLayer.setActive(true)
-      pixelLayer.setActive(false)
+      activeMode = 'standard'
     }
+    activeMode = mode
+    publishFog()
     emit('raster-error', modeError)
-    await fadeModeVeil(0)
-    if (revision === modeRevision && !disposed && activeMode === 'pixel') pixelLayer.startReveal()
   } catch (error) {
-    if (revision !== modeRevision || disposed) return
+    if (stale()) return
     pixelLayer.setActive(false)
     activeMode = 'standard'
     protectAreaLayer.setActive(true)
     const baseLayer = createBaseLayer(props.baseMap)
     if (baseLayer && map) map.setBaseLayer(baseLayer)
     syncRasterSource(baseLayer)
-    emit('update:renderMode', 'standard')
     modeError = error instanceof Error ? error.message : '像素地图加载失败'
     emit('raster-error', modeError)
-    await fadeModeVeil(0)
+    // The parent mode watcher owns recovery and cancels this transition.
+    if (props.renderMode !== 'standard') emit('update:renderMode', 'standard')
   } finally {
-    if (revision === modeRevision && !disposed) {
+    if (!stale()) {
+      modeSwitching.value = false
       emit('mode-loading', false)
       void processAreaRequest()
     }
@@ -184,12 +186,14 @@ function stopNativeAnimation() {
   nativeAnimation = null
 }
 
-function cancelAreaRequest() {
+function cancelAreaRequest(immediate = false) {
   pendingAreaRequest = null
   focusRevision += 1
-  mapFlight.cancel()
+  mapFlight.cancel(immediate)
   stopNativeAnimation()
 }
+
+function handleResize() { cancelAreaRequest() }
 
 function handleUserInput(event: Event) {
   if (event instanceof KeyboardEvent && !['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', '+', '-', '=', 'Escape'].includes(event.key)) return
@@ -234,7 +238,7 @@ function applyInitialView() {
 }
 
 async function processAreaRequest() {
-  if (!map || !sceneReady || !pendingAreaRequest || !protectAreaLayer.isSelectionReady()) return
+  if (modeSwitching.value || !map || !sceneReady || !pendingAreaRequest || !protectAreaLayer.isSelectionReady()) return
   const request = pendingAreaRequest
   const revision = focusRevision
   let extent
@@ -291,7 +295,7 @@ function syncRasterSource(baseLayer?: maptalks.TileLayer) {
 
 function executeCommand(type: SceneCommand) {
   cancelAreaRequest()
-  if (!map) return
+  if (!map || modeSwitching.value) return
   stopMapAnimation(map)
   if (type === 'zoom-in') nativeAnimation = map.animateTo({ zoom: Math.min(MAP_VIEW_CONFIG.maxZoom, map.getZoom() + 1) })
   if (type === 'zoom-out') nativeAnimation = map.animateTo({ zoom: Math.max(MAP_VIEW_CONFIG.minZoom, map.getZoom() - 1) })
@@ -322,7 +326,7 @@ onMounted(async () => {
       attribution: false,
     })
     map.on('zoomend moveend pitchend rotateend', reportView)
-    map.on('resize', cancelAreaRequest)
+    map.on('resize', handleResize)
     inputContainer = mapContainer.value
     inputEvents.forEach(event => inputContainer?.addEventListener(event, handleUserInput, { capture: true, passive: true }))
     map.on('click', (event: any) => {
@@ -382,13 +386,12 @@ watch(() => props.areaRequest, request => {
 onBeforeUnmount(() => {
   disposed = true
   modeRevision += 1
-  modeAnimation?.kill()
   sceneReady = false
   pendingAreaRequest = null
   focusRevision += 1
   inputEvents.forEach(event => inputContainer?.removeEventListener(event, handleUserInput, true))
   inputContainer = null
-  map?.off('resize', cancelAreaRequest)
+  map?.off('resize', handleResize)
   mapFlight.dispose()
   stopNativeAnimation()
   protectAreaLayer.dispose()
@@ -399,15 +402,14 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <div ref="mapContainer" class="map-canvas" :class="{ 'is-initializing': !canvasVisible }" tabindex="0" aria-label="广西原生境保护区三维地图"></div>
+  <div ref="mapContainer" class="map-canvas" :class="{ 'is-initializing': !canvasVisible }" :inert="modeSwitching" tabindex="0" aria-label="广西原生境保护区三维地图"></div>
   <MapFlightFog ref="flightFog" />
-  <div ref="modeVeil" class="mode-veil" aria-hidden="true"></div>
+  <PixelMapFog ref="pixelFog" />
 </template>
 
 <style scoped>
 .map-canvas { position: absolute; inset: 0; cursor: grab; background: #15201d; }
 .map-canvas.is-initializing { visibility:hidden }
-.mode-veil { position:absolute;inset:0;z-index:1;pointer-events:none;background:#15201d;opacity:0 }
 .map-canvas:active { cursor: grabbing; }.map-canvas.is-picking { cursor: pointer; }
 .map-canvas:focus-visible { outline:2px solid var(--mint);outline-offset:-2px }
 :deep(.maptalks-canvas-layer), :deep(.maptalks-front-layer) { outline: none; }

@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, useId, watch } from 'vue'
-import { ChevronDown, EyeOff, List, LocateFixed, Search, X } from '@lucide/vue'
+import { ChevronDown, EyeOff, List, Search, X } from '@lucide/vue'
 import { AREA_TYPE_COLORS } from '../config'
 import { filterProtectAreaSites } from '../data/protectAreas'
 import type { ProtectAreaSite } from '../data/protectAreas'

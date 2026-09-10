@@ -40,7 +40,7 @@ export const MAP_VIEW_CONFIG = {
   pitch: 46,
   bearing: 0,
   minZoom: 3,
-  maxZoom: 16,
+  maxZoom: 18,
   projection: 'EPSG:3857',
   resetDuration: 650,
   dimensionDuration: 520,
@@ -60,6 +60,15 @@ export const PIXEL_MAP_CONFIG = {
   refreshInterval: 140,
   transitionDuration: 0.32,
   workerTimeout: 15000,
+}
+
+export const PIXEL_FOG_CONFIG = {
+  cellSize: 12,
+  closeDuration: 0.4,
+  revealDuration: 0.6,
+  cancelDuration: 0.15,
+  reducedMotionDuration: 0.12,
+  palette: ['#a5b8ad', '#bacbbf', '#cedbd0', '#e1e8db'],
 }
 
 export const PIXEL_REVEAL_CONFIG = {

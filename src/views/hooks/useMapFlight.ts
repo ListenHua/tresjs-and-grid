@@ -9,6 +9,7 @@ interface MapFlightOptions {
   onSettled: () => void
   onFogChange?: (coverage: number) => void
   canUseFog?: () => boolean
+  getFogConfig?: () => Partial<typeof MAP_FOG_CONFIG>
   prepareArrival?: (siteId: string, signal: AbortSignal) => Promise<void>
 }
 
@@ -78,14 +79,14 @@ export function useMapFlight(options: MapFlightOptions) {
     cleanupArrival = null
   }
 
-  function cancel() {
+  function cancel(immediate = false) {
     const wasActive = active
     stopAnimations()
     setActive(false)
     if (wasActive) options.onSettled()
-    if (fog.coverage > 0 && !window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
+    if (!immediate && fog.coverage > 0 && !window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
       dismissal = gsap.to(fog, {
-        coverage: 0, duration: MAP_FOG_CONFIG.cancelDuration, ease: 'power2.out',
+        coverage: 0, duration: (options.getFogConfig?.().cancelDuration ?? MAP_FOG_CONFIG.cancelDuration), ease: 'power2.out',
         onUpdate: publishFog,
         onComplete: () => { dismissal = null; fog.coverage = 0; publishFog() },
       })
@@ -116,7 +117,7 @@ export function useMapFlight(options: MapFlightOptions) {
       if (cleanupArrival === cleanup) cleanupArrival = null
       if (!disposed && token === revision && timeline === current) current.play()
     }
-    timer = setTimeout(resume, MAP_FOG_CONFIG.maxWaitMs)
+    timer = setTimeout(resume, options.getFogConfig?.().maxWaitMs ?? MAP_FOG_CONFIG.maxWaitMs)
     try {
       Promise.resolve(options.prepareArrival?.(siteId, controller.signal)).then(resume, resume)
     } catch {
@@ -177,25 +178,26 @@ export function useMapFlight(options: MapFlightOptions) {
         options.onSettled()
       },
     })
-    const fogEnabled = MAP_FOG_CONFIG.enabled && options.onFogChange && (options.canUseFog?.() ?? true)
+    const fogConfig = { ...MAP_FOG_CONFIG, ...options.getFogConfig?.() }
+    const fogEnabled = fogConfig.enabled && options.onFogChange && (options.canUseFog?.() ?? true)
     if (fogEnabled && (!sameSite || plan.cruiseZoom !== null || fog.coverage > 0)) {
-      const closeDuration = MAP_FOG_CONFIG.closeDuration * (1 - fog.coverage)
-      const arrivalZoom = Math.max(map.getMinZoom(), targetZoom - MAP_FOG_CONFIG.approachZoomOffset)
+      const closeDuration = fogConfig.closeDuration * (1 - fog.coverage)
+      const arrivalZoom = Math.max(map.getMinZoom(), targetZoom - fogConfig.approachZoomOffset)
       const departureZoom = Math.max(map.getMinZoom(), Math.min(startZoom, plan.cruiseZoom ?? arrivalZoom))
-      const travelDuration = Math.min(MAP_FOG_CONFIG.travelMaxDuration,
-        Math.max(MAP_FOG_CONFIG.travelMinDuration, plan.duration * 0.45))
+      const travelDuration = Math.min(fogConfig.travelMaxDuration,
+        Math.max(fogConfig.travelMinDuration, plan.duration * 0.45))
       const arrivalTime = closeDuration + travelDuration
       const current = timeline
       timeline.addLabel('close', 0)
-      timeline.to(fog, { coverage: 1, duration: closeDuration, ease: MAP_FOG_CONFIG.fogEase }, 0)
+      timeline.to(fog, { coverage: 1, duration: closeDuration, ease: fogConfig.fogEase }, 0)
       timeline.to(state, { zoom: departureZoom, duration: closeDuration, ease: MAP_FLIGHT_CONFIG.pullbackEase }, 0)
       timeline.addLabel('travel', closeDuration)
       timeline.to(state, { progress: 1, zoom: arrivalZoom, duration: travelDuration, ease: MAP_FLIGHT_CONFIG.centerEase }, 'travel')
       timeline.addLabel('arrival', arrivalTime)
       timeline.addPause('arrival', () => { render(); waitForArrival(siteId, current, token) })
       timeline.addLabel('reveal', arrivalTime)
-      timeline.to(fog, { coverage: 0, duration: MAP_FOG_CONFIG.revealDuration, ease: MAP_FOG_CONFIG.fogEase }, 'reveal')
-      timeline.to(state, { zoom: targetZoom, duration: Math.max(MAP_FOG_CONFIG.approachDuration, MAP_FOG_CONFIG.revealDuration),
+      timeline.to(fog, { coverage: 0, duration: fogConfig.revealDuration, ease: fogConfig.fogEase }, 'reveal')
+      timeline.to(state, { zoom: targetZoom, duration: Math.max(fogConfig.approachDuration, fogConfig.revealDuration),
         ease: MAP_FLIGHT_CONFIG.approachEase }, 'reveal')
     } else {
       fog.coverage = 0
