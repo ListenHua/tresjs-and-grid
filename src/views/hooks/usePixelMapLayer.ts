@@ -4,13 +4,15 @@ import type { HandlerFnResultType } from 'maptalks/dist/core/Eventable'
 import { ThreeLayer } from 'maptalks.three'
 import * as THREE from 'three'
 import { gsap } from 'gsap'
-import { AREA_TYPE_COLORS, EXTRUSION_CONFIG, PIXEL_MAP_CONFIG } from '../config'
+import { AREA_TYPE_COLORS, EXTRUSION_CONFIG, PIXEL_MAP_CONFIG, PIXEL_REVEAL_CONFIG } from '../config'
 import { PROTECT_AREAS, PROTECT_AREA_SITES } from '../data/protectAreas'
 import type { ProtectAreaSite } from '../data/protectAreas'
 import type { ProtectAreaFeature, ProtectAreaType } from '../types/map'
 import type { GeographicExtent } from '../utils/RasterAtlasManager'
 import { projectPixelPoint, resolvePixelLevel, unprojectPixelPoint } from '../utils/pixelGrid'
 import type { PixelBounds, PixelGridRequest, PixelGridResult } from '../utils/pixelGrid'
+import { createPixelRevealMaterial } from '../utils/pixelRevealMaterial'
+import { getPixelRevealAmount, getPixelRevealStart } from '../utils/pixelRevealTiming'
 
 interface PixelMapOptions {
   container: Ref<HTMLElement | null>
@@ -41,6 +43,10 @@ export function usePixelMapLayer(options: PixelMapOptions) {
   let requestedKey = ''
   let latestWork: Promise<boolean> = Promise.resolve(false)
   let refreshTimer: ReturnType<typeof setTimeout> | undefined
+  let frozenGrid: Omit<PixelGridRequest, 'id' | 'visibleTypes'> | null = null
+  let revealArmed = false
+  let revealTween: gsap.core.Tween | null = null
+  const revealTime = { value: PIXEL_REVEAL_CONFIG.duration }
   const pending = new Map<number, { resolve: (ready: boolean) => void; reject: (error: Error) => void; timer: ReturnType<typeof setTimeout> }>()
   const batches = new Map<string, THREE.InstancedMesh>()
   const animations = new Map<string, gsap.core.Tween>()
@@ -107,7 +113,7 @@ export function usePixelMapLayer(options: PixelMapOptions) {
     PROTECT_AREA_SITES.forEach(site => {
       const visibleZones = site.zones.filter(zone => options.getVisibleTypes().includes(zone.properties.BHDLX))
       if (!visibleZones.length) return
-      if (request.detail && visibleZones.some(zone => represented.has(PROTECT_AREAS.features.indexOf(zone)))) return
+      if (visibleZones.some(zone => represented.has(PROTECT_AREAS.features.indexOf(zone)))) return
       const [horizontal, vertical] = projectPixelPoint((site.extent.west + site.extent.east) / 2, (site.extent.south + site.extent.north) / 2)
       if (horizontal < request.bounds[0] || horizontal > request.bounds[2] || vertical < request.bounds[1] || vertical > request.bounds[3]) return
       const key = `${Math.floor(horizontal / (result.size * 3))}/${Math.floor(vertical / (result.size * 3))}`
@@ -120,14 +126,20 @@ export function usePixelMapLayer(options: PixelMapOptions) {
         west: Math.min(...sites.map(site => site.extent.west)), south: Math.min(...sites.map(site => site.extent.south)),
         east: Math.max(...sites.map(site => site.extent.east)), north: Math.max(...sites.map(site => site.extent.north)),
       }
-      const marker = new maptalks.Marker([(extent.west + extent.east) / 2, (extent.south + extent.north) / 2], {
+      const longitude = (extent.west + extent.east) / 2
+      const latitude = (extent.south + extent.north) / 2
+      const projected = projectPixelPoint(longitude, latitude)
+      const revealStart = result.reveal ? getPixelRevealStart(...projected, result.reveal) : 0
+      const opacity = getPixelRevealAmount(revealTime.value, revealStart)
+      const marker = new maptalks.Marker([longitude, latitude], {
         symbol: {
           markerType: 'square', markerWidth: 12, markerHeight: 12,
           markerFill: PIXEL_MAP_CONFIG.markerColor, markerLineColor: '#15201d', markerLineWidth: 2,
           textName: sites.length > 1 ? String(sites.length) : '', textSize: 11, textFill: '#f2f0e9',
           textHaloFill: '#15201d', textHaloRadius: 2, textDy: -16,
+          markerOpacity: opacity, textOpacity: opacity,
         },
-        properties: { sites, extent },
+        properties: { sites, extent, revealStart },
       })
       marker.setInfoWindow({ content: sites.length > 1 ? `${sites.length} 处保护区，点击放大查看` : sites[0]!.name, autoOpenOn: 'mouseover', autoCloseOn: 'mouseout' })
       markers?.addGeometry(marker)
@@ -142,7 +154,8 @@ export function usePixelMapLayer(options: PixelMapOptions) {
     nextGroup.position.copy(origin)
     const width = Math.abs(layer.coordinateToVector3(unprojectPixelPoint(request.bounds[0] + result.size, request.bounds[1])).x
       - layer.coordinateToVector3(unprojectPixelPoint(request.bounds[0], request.bounds[1])).x)
-    const thickness = width * PIXEL_MAP_CONFIG.thicknessRatio
+    const minimumSize = result.sizes.reduce((minimum, size) => Math.min(minimum, size), result.size)
+    const thickness = width * minimumSize / result.size * PIXEL_MAP_CONFIG.thicknessRatio
     const cellsByOwner = new Map<number, number[]>()
     result.owners.forEach((owner, index) => {
       const indices = cellsByOwner.get(owner) ?? []
@@ -153,16 +166,21 @@ export function usePixelMapLayer(options: PixelMapOptions) {
     const transform = new THREE.Object3D()
     cellsByOwner.forEach((indices, owner) => {
       const feature = owner >= 0 ? PROTECT_AREAS.features[owner] : undefined
-      const material = new THREE.MeshLambertMaterial({ color: feature ? AREA_TYPE_COLORS[feature.properties.BHDLX] : PIXEL_MAP_CONFIG.landColor })
+      const color = feature ? AREA_TYPE_COLORS[feature.properties.BHDLX] : PIXEL_MAP_CONFIG.landColor
+      const material = result.reveal ? createPixelRevealMaterial(color, revealTime) : new THREE.MeshLambertMaterial({ color })
       const batch = new THREE.InstancedMesh(new THREE.BoxGeometry(1, 1, 1), material, indices.length)
+      const starts = new Float32Array(indices.length)
       indices.forEach((cellIndex, instanceIndex) => {
+        const cellWidth = width * result.sizes[cellIndex]! / result.size
         const coordinate = unprojectPixelPoint(result.cells[cellIndex * 2]!, result.cells[cellIndex * 2 + 1]!)
         transform.position.copy(layer!.coordinateToVector3(coordinate)).sub(origin)
         transform.position.z = thickness / 2
-        transform.scale.set(width * (1 - PIXEL_MAP_CONFIG.gapRatio), width * (1 - PIXEL_MAP_CONFIG.gapRatio), thickness)
+        transform.scale.set(cellWidth * (1 - PIXEL_MAP_CONFIG.gapRatio), cellWidth * (1 - PIXEL_MAP_CONFIG.gapRatio), thickness)
         transform.updateMatrix()
         batch.setMatrixAt(instanceIndex, transform.matrix)
+        starts[instanceIndex] = result.starts[cellIndex]!
       })
+      batch.geometry.setAttribute('pixelRevealStart', new THREE.InstancedBufferAttribute(starts, 1))
       batch.instanceMatrix.needsUpdate = true
       batch.computeBoundingSphere()
       if (feature) {
@@ -220,22 +238,28 @@ export function usePixelMapLayer(options: PixelMapOptions) {
     return initialization
   }
 
-  function refreshNow(): Promise<boolean> {
-    clearTimeout(refreshTimer)
-    refreshTimer = undefined
-    if (!engaged || !map || !worker || disposed) return Promise.resolve(false)
-    const extent = map.getExtent()
-    if (extent.xmin === null || extent.ymin === null || extent.xmax === null || extent.ymax === null) return Promise.resolve(false)
+  function getViewportGrid(mapInstance: maptalks.Map, budget = PIXEL_MAP_CONFIG.maxCells) {
+    const extent = mapInstance.getExtent()
+    if (extent.xmin === null || extent.ymin === null || extent.xmax === null || extent.ymax === null) return null
     const longitudePadding = extent.getWidth() * PIXEL_MAP_CONFIG.overscan
     const latitudePadding = extent.getHeight() * PIXEL_MAP_CONFIG.overscan
     const southwest = projectPixelPoint(Math.max(70, extent.xmin - longitudePadding), Math.max(0, extent.ymin - latitudePadding))
     const northeast = projectPixelPoint(Math.min(140, extent.xmax + longitudePadding), Math.min(56, extent.ymax + latitudePadding))
     const bounds: PixelBounds = [...southwest, ...northeast]
-    const level = resolvePixelLevel(bounds, Math.round(map.getZoom()) + PIXEL_MAP_CONFIG.gridZoomOffset, PIXEL_MAP_CONFIG.maxCells)
+    const level = resolvePixelLevel(bounds, Math.round(mapInstance.getZoom()) + PIXEL_MAP_CONFIG.gridZoomOffset, budget)
+    return { bounds, level, detail: mapInstance.getZoom() >= PIXEL_MAP_CONFIG.detailZoom }
+  }
+
+  function refreshNow(): Promise<boolean> {
+    clearTimeout(refreshTimer)
+    refreshTimer = undefined
+    if (!engaged || !map || !worker || disposed) return Promise.resolve(false)
+    const grid = frozenGrid ?? getViewportGrid(map)
+    if (!grid) return Promise.resolve(false)
     const visibleTypes = options.getRegionsVisible() ? [...options.getVisibleTypes()] : []
     batches.forEach(batch => { batch.visible = visibleTypes.includes((batch.userData.feature as ProtectAreaFeature).properties.BHDLX) })
     if (!options.getRegionsVisible()) markers?.clear()
-    const request: PixelGridRequest = { id: revision + 1, bounds, level, detail: map.getZoom() >= PIXEL_MAP_CONFIG.detailZoom, visibleTypes }
+    const request: PixelGridRequest = { id: revision + 1, ...grid, visibleTypes }
     const key = JSON.stringify({ ...request, id: 0 })
     if (key === requestedKey) return latestWork
     requestedKey = key
@@ -278,12 +302,29 @@ export function usePixelMapLayer(options: PixelMapOptions) {
   }
 
   function scheduleRefresh() {
-    if (!engaged || refreshTimer) return
+    if (!engaged || frozenGrid || refreshTimer) return
     refreshTimer = setTimeout(() => { void refreshNow().catch(error => options.onError(error.message)) }, PIXEL_MAP_CONFIG.refreshInterval)
   }
 
-  async function prepare(mapInstance: maptalks.Map) {
+  async function prepare(mapInstance: maptalks.Map, animate = false) {
     engaged = true
+    if (animate && !reducedMotion) {
+      const focus = getViewportGrid(mapInstance, Math.floor(PIXEL_MAP_CONFIG.maxCells * PIXEL_REVEAL_CONFIG.focusBudgetRatio))
+      if (focus) {
+        const center = mapInstance.getCenter()
+        const origin = projectPixelPoint(center.x, center.y)
+        const extent = PIXEL_REVEAL_CONFIG.nationalExtent
+        const bounds: PixelBounds = [...projectPixelPoint(extent.west, extent.south), ...projectPixelPoint(extent.east, extent.north)]
+        const nearRadius = Math.max(...[focus.bounds[0], focus.bounds[2]].flatMap(horizontal =>
+          [focus.bounds[1], focus.bounds[3]].map(vertical => Math.hypot(horizontal - origin[0], vertical - origin[1]))))
+        frozenGrid = {
+          bounds, level: PIXEL_REVEAL_CONFIG.overviewLevel, detail: false,
+          reveal: { origin, focusBounds: focus.bounds, focusLevel: focus.level, nearRadius },
+        }
+        revealArmed = true
+        revealTime.value = 0
+      }
+    }
     let timer: ReturnType<typeof setTimeout> | undefined
     try {
       await Promise.race([
@@ -306,6 +347,11 @@ export function usePixelMapLayer(options: PixelMapOptions) {
     engaged = value
     if (value) { if (group) group.visible = true; layer?.show(); markers?.show(); syncSelection(true); scheduleRefresh() }
     else {
+      revealTween?.kill()
+      revealTween = null
+      revealArmed = false
+      frozenGrid = null
+      revealTime.value = PIXEL_REVEAL_CONFIG.duration
       revision += 1
       requestedKey = ''
       appliedKey = ''
@@ -319,6 +365,40 @@ export function usePixelMapLayer(options: PixelMapOptions) {
     }
   }
 
+  function publishRevealTime() {
+    markers?.getGeometries().forEach(marker => {
+      const opacity = getPixelRevealAmount(revealTime.value, marker.getProperties()?.revealStart ?? 0)
+      marker.updateSymbol({ markerOpacity: opacity, textOpacity: opacity })
+    })
+    layer?.renderScene()
+  }
+
+  function finishReveal() {
+    if (!revealArmed && !revealTween && !frozenGrid) return
+    revealTween?.kill()
+    revealTween = null
+    revealArmed = false
+    frozenGrid = null
+    revealTime.value = PIXEL_REVEAL_CONFIG.duration
+    group?.children.forEach(object => {
+      if (!(object instanceof THREE.InstancedMesh)) return
+      const materials = Array.isArray(object.material) ? object.material : [object.material]
+      materials.forEach(material => { if (material.transparent) { material.transparent = false; material.needsUpdate = true } })
+    })
+    publishRevealTime()
+    scheduleRefresh()
+  }
+
+  function startReveal() {
+    if (!active || !revealArmed || disposed) return
+    revealTween?.kill()
+    if (reducedMotion) { finishReveal(); return }
+    revealTween = gsap.to(revealTime, {
+      value: PIXEL_REVEAL_CONFIG.duration, duration: PIXEL_REVEAL_CONFIG.duration, ease: 'none',
+      onUpdate: publishRevealTime, onComplete: finishReveal,
+    })
+  }
+
   function identify(event: { coordinate: maptalks.Coordinate; containerPoint?: maptalks.Point }) {
     if (!active || !map || !layer || !group || !options.getRegionsVisible()) return null
     const point = event.containerPoint ?? map.coordToContainerPoint(event.coordinate)
@@ -327,24 +407,30 @@ export function usePixelMapLayer(options: PixelMapOptions) {
     group.updateMatrixWorld(true)
     raycaster.setFromCamera(pointer, layer.getCamera())
     const hit = raycaster.intersectObjects([...batches.values()], false)[0]
+    if (hit && typeof hit.instanceId === 'number' && hit.object instanceof THREE.InstancedMesh) {
+      const start = hit.object.geometry.getAttribute('pixelRevealStart')?.getX(hit.instanceId) ?? 0
+      if (getPixelRevealAmount(revealTime.value, start) <= 0.001) return null
+    }
     const feature = hit?.object.userData.feature as ProtectAreaFeature | undefined
     return feature && options.getVisibleTypes().includes(feature.properties.BHDLX) ? feature : null
   }
 
   function handleClick(event: { coordinate: maptalks.Coordinate; containerPoint?: maptalks.Point }) {
     if (!active) return
-    const marker = markers?.identify(event.coordinate)[0]
+    const marker = markers?.identify(event.coordinate).find(geometry => getPixelRevealAmount(revealTime.value, geometry.getProperties()?.revealStart ?? 0) > 0.001)
     if (marker) {
       const properties = marker.getProperties()
+      finishReveal()
       if (properties) options.onLocate(properties.sites, properties.extent)
       return
     }
     const feature = identify(event)
+    if (feature) finishReveal()
     options.onSelect(feature?.id === options.getSelection()?.id ? null : feature)
   }
 
   function handleHover(event?: HandlerFnResultType) {
-    if (!active || flying || !supportsHover || !event?.coordinate) return
+    if (!active || flying || frozenGrid || !supportsHover || !event?.coordinate) return
     const feature = identify({ coordinate: event.coordinate as maptalks.Coordinate, containerPoint: event.containerPoint as maptalks.Point | undefined })
     const id = feature?.id ?? null
     if (hoveredId === id) return
@@ -356,7 +442,7 @@ export function usePixelMapLayer(options: PixelMapOptions) {
 
   function setFlightActive(value: boolean) {
     flying = value
-    if (value) clearHover()
+    if (value) { clearHover(); finishReveal() }
   }
 
   function dispose() {
@@ -376,6 +462,6 @@ export function usePixelMapLayer(options: PixelMapOptions) {
     layer = null
   }
 
-  return { prepare, setActive, refreshNow, syncSelection, handleClick, setFlightActive, dispose,
+  return { prepare, setActive, refreshNow, syncSelection, handleClick, setFlightActive, startReveal, finishReveal, dispose,
     isReady: () => engaged && !!appliedKey && appliedKey === requestedKey }
 }

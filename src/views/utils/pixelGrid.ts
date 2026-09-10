@@ -13,12 +13,22 @@ export interface PixelGridRequest {
   level: number
   detail: boolean
   visibleTypes: ProtectAreaType[]
+  reveal?: { origin: PixelPoint; focusBounds: PixelBounds; focusLevel: number; nearRadius: number }
+}
+export interface PixelRevealSchedule {
+  origin: PixelPoint
+  nearRadius: number
+  minDistance: number
+  maxDistance: number
 }
 export interface PixelGridResult {
   id: number
   size: number
   cells: Float64Array
+  sizes: Float64Array
+  starts: Float32Array
   owners: Int16Array
+  reveal?: PixelRevealSchedule
   error?: string
 }
 

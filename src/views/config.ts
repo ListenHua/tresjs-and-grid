@@ -40,7 +40,7 @@ export const MAP_VIEW_CONFIG = {
   pitch: 46,
   bearing: 0,
   minZoom: 3,
-  maxZoom: 18,
+  maxZoom: 16,
   projection: 'EPSG:3857',
   resetDuration: 650,
   dimensionDuration: 520,
@@ -60,6 +60,17 @@ export const PIXEL_MAP_CONFIG = {
   refreshInterval: 140,
   transitionDuration: 0.32,
   workerTimeout: 15000,
+}
+
+export const PIXEL_REVEAL_CONFIG = {
+  duration: 2,
+  localDuration: 0.5,
+  cellDuration: 0.08,
+  stagger: 0.03,
+  startScale: 0.7,
+  overviewLevel: 9,
+  focusBudgetRatio: 0.55,
+  nationalExtent: { west: 73.502355, south: 3.39716187, east: 135.09567, north: 53.563269 },
 }
 
 export const MAP_FLIGHT_CONFIG = {

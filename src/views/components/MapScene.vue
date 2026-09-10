@@ -130,12 +130,13 @@ async function switchRenderMode(mode: MapRenderMode) {
   try {
     if (mode === 'pixel') {
       modeError = null
+      pixelLayer.setActive(false)
       protectAreaLayer.setRasterSource(null)
       protectAreaLayer.setActive(false)
       map.removeBaseLayer()
-      const ready = await pixelLayer.prepare(map)
+      const ready = await pixelLayer.prepare(map, true)
       if (!ready || revision !== modeRevision || disposed) return
-    } else if (activeMode === 'standard') {
+    } else {
       pixelLayer.setActive(false)
     }
     await fadeModeVeil(1)
@@ -153,6 +154,7 @@ async function switchRenderMode(mode: MapRenderMode) {
     }
     emit('raster-error', modeError)
     await fadeModeVeil(0)
+    if (revision === modeRevision && !disposed && activeMode === 'pixel') pixelLayer.startReveal()
   } catch (error) {
     if (revision !== modeRevision || disposed) return
     pixelLayer.setActive(false)
@@ -344,6 +346,7 @@ onMounted(async () => {
 watch(() => props.command.id, () => executeCommand(props.command.type))
 watch(() => props.renderMode, mode => { void switchRenderMode(mode) })
 watch(() => props.regionsVisible, visible => {
+  pixelLayer.finishReveal()
   if (!visible) cancelAreaRequest()
   protectAreaLayer.setVisible(visible)
   if (activeMode === 'pixel') void pixelLayer.refreshNow().catch(error => emit('raster-error', error.message))
@@ -360,12 +363,14 @@ watch(() => props.baseMap, baseMap => {
   }
 })
 watch(() => props.visibleTypes, types => {
+  pixelLayer.finishReveal()
   const selection = protectAreaLayer.getSelection()
   if (selection && !types.includes(selection.properties.BHDLX)) cancelAreaRequest()
   protectAreaLayer.scheduleRebuild()
   if (activeMode === 'pixel') void pixelLayer.refreshNow().catch(error => emit('raster-error', error.message))
 }, { deep: true })
 watch(() => props.areaRequest, request => {
+  pixelLayer.finishReveal()
   if (!request) { cancelAreaRequest(); return }
   focusRevision += 1
   mapFlight.suspend()
