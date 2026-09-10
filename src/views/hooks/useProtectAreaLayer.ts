@@ -279,6 +279,8 @@ export function useProtectAreaLayer(options: ProtectAreaLayerOptions) {
   let detailTimer: ReturnType<typeof setTimeout> | undefined
   let hoverExitTimer: ReturnType<typeof setTimeout> | undefined
   let flightActive = false
+  let renderActive = true
+  let regionsVisible = true
   let lastFlightRasterRefresh = 0
   const supportsHover = typeof window === 'undefined'
     || window.matchMedia('(hover: hover) and (pointer: fine)').matches
@@ -636,7 +638,7 @@ export function useProtectAreaLayer(options: ProtectAreaLayerOptions) {
     object3d.scale.z = EXTRUSION_CONFIG.flatScale
     mesh.setId(id).setProperties(feature.properties)
     mesh.on('mouseover', () => {
-      if (!supportsHover || flightActive) return
+      if (!renderActive || !supportsHover || flightActive) return
       clearTimeout(hoverExitTimer)
       if (hoveredId === id) return
       const previous = hoveredId
@@ -652,7 +654,7 @@ export function useProtectAreaLayer(options: ProtectAreaLayerOptions) {
       options.onHover(feature)
     })
     mesh.on('mouseout', () => {
-      if (!supportsHover || flightActive) return
+      if (!renderActive || !supportsHover || flightActive) return
       clearTimeout(hoverExitTimer)
       hoverExitTimer = setTimeout(() => {
         if (hoveredId !== id) return
@@ -663,7 +665,7 @@ export function useProtectAreaLayer(options: ProtectAreaLayerOptions) {
         options.onHover(null)
       }, EXTRUSION_CONFIG.hoverExitDelay)
     })
-    mesh.on('click', () => setSelection(selectedId === id ? null : feature))
+    mesh.on('click', () => { if (renderActive) setSelection(selectedId === id ? null : feature) })
     featureById.set(id, feature)
     sideMaterials.set(id, sideMaterial)
     topMaterials.set(id, topMaterial)
@@ -763,8 +765,9 @@ export function useProtectAreaLayer(options: ProtectAreaLayerOptions) {
   }
 
   function setVisible(visible: boolean) {
+    regionsVisible = visible
     if (visible) {
-      layer?.show()
+      if (renderActive) layer?.show()
       scheduleRasterRefresh()
       return
     }
@@ -780,6 +783,13 @@ export function useProtectAreaLayer(options: ProtectAreaLayerOptions) {
     options.container.value?.classList.remove('is-picking')
     setSelection(null, true)
     layer?.hide()
+  }
+
+  function setActive(active: boolean) {
+    renderActive = active
+    clearHover()
+    if (active && regionsVisible) layer?.show()
+    else layer?.hide()
   }
 
   function clearHover() {
@@ -827,7 +837,7 @@ export function useProtectAreaLayer(options: ProtectAreaLayerOptions) {
   }
 
   function selectFeature(id: string) {
-    if (!isSelectionReady() || !layer?.isVisible()) return false
+    if (!isSelectionReady() || !regionsVisible) return false
     const feature = featureById.get(id)
     if (!feature) return false
     clearHover()
@@ -864,7 +874,7 @@ export function useProtectAreaLayer(options: ProtectAreaLayerOptions) {
     layer = null
   }
 
-  return { createLayer, identify, setVisible, setRasterSource, clearSelection, selectFeature, getSelection,
+  return { createLayer, identify, setVisible, setActive, setRasterSource, clearSelection, selectFeature, getSelection,
     isSelectionReady, scheduleRebuild, setFlightActive, refreshRaster: refreshRasterTextures,
     refreshRasterNow, isSiteRasterReady, dispose }
 }

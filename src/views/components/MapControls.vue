@@ -1,17 +1,20 @@
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, onMounted, ref, useId } from 'vue'
-import { Box, Check, Layers3, LocateFixed, Map, Minus, Plus } from '@lucide/vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, useId, watch } from 'vue'
+import { Box, Check, Grid2X2, Layers3, LocateFixed, Map, Minus, Plus } from '@lucide/vue'
 import { MAP_VIEW_CONFIG } from '../config'
-import type { BaseMapConfig, MapViewState, SceneCommand } from '../types/map'
+import type { BaseMapConfig, MapRenderMode, MapViewState, SceneCommand } from '../types/map'
 
 const props = defineProps<{
   view: MapViewState
   baseMaps: BaseMapConfig[]
   baseMapId: string
+  renderMode: MapRenderMode
+  modeLoading: boolean
 }>()
 const emit = defineEmits<{
   command: [type: SceneCommand]
   'update:baseMapId': [id: string]
+  'update:renderMode': [mode: MapRenderMode]
 }>()
 const is3d = computed(() => props.view.pitch > 10)
 const activeBaseMap = computed(() => props.baseMaps.find(item => item.id === props.baseMapId))
@@ -27,6 +30,7 @@ function markPreviewFailed(source?: string) {
 }
 
 async function toggleBaseMaps() {
+  if (props.renderMode === 'pixel') return
   baseMapMenuOpen.value = !baseMapMenuOpen.value
   if (!baseMapMenuOpen.value) return
   await nextTick()
@@ -59,6 +63,7 @@ function closeOnFocusOut(event: FocusEvent) {
 
 onMounted(() => document.addEventListener('pointerdown', closeOnOutsideClick))
 onBeforeUnmount(() => document.removeEventListener('pointerdown', closeOnOutsideClick))
+watch(() => props.renderMode, () => { baseMapMenuOpen.value = false })
 </script>
 
 <template>
@@ -75,9 +80,9 @@ onBeforeUnmount(() => document.removeEventListener('pointerdown', closeOnOutside
       <Box v-if="is3d" :size="19" /><Map v-else :size="19" />
     </button>
     <div ref="baseMapControl" class="base-map-control" @keydown.esc.stop.prevent="closeBaseMaps" @focusout="closeOnFocusOut">
-      <button ref="baseMapButton" class="base-map-trigger" type="button" title="切换底图"
+      <button ref="baseMapButton" class="base-map-trigger" type="button" :title="renderMode === 'pixel' ? '常规模式下可切换底图' : '切换底图'"
         :aria-label="`切换底图，当前${activeBaseMap?.name ?? '无底图'}`" :aria-expanded="baseMapMenuOpen"
-        :aria-controls="baseMapPanelId" aria-haspopup="dialog" :disabled="baseMaps.length === 0"
+        :aria-controls="baseMapPanelId" aria-haspopup="dialog" :disabled="baseMaps.length === 0 || renderMode === 'pixel'"
         @click="toggleBaseMaps"><Layers3 :size="19" /></button>
       <div v-if="baseMapMenuOpen" :id="baseMapPanelId" ref="baseMapPanel" class="base-map-panel" role="dialog" aria-label="选择底图">
         <div class="base-map-options">
@@ -90,6 +95,10 @@ onBeforeUnmount(() => document.removeEventListener('pointerdown', closeOnOutside
         </div>
       </div>
     </div>
+    <button class="pixel-trigger" type="button" :aria-pressed="renderMode === 'pixel'" :aria-busy="modeLoading"
+      :title="modeLoading ? '正在切换地图模式，点击可取消' : renderMode === 'pixel' ? '切换至常规地图' : '切换至像素地图'"
+      :aria-label="renderMode === 'pixel' ? '切换至常规地图' : '切换至像素地图'"
+      @click="emit('update:renderMode', renderMode === 'pixel' ? 'standard' : 'pixel')"><Grid2X2 :size="18" /></button>
   </nav>
 </template>
 
@@ -99,6 +108,10 @@ onBeforeUnmount(() => document.removeEventListener('pointerdown', closeOnOutside
 .map-controls > button + button { border-top:1px solid rgba(242,240,233,.12) }
 .map-controls > button:disabled,.base-map-trigger:disabled { opacity:.3;cursor:not-allowed }
 .base-map-control { position:relative;border-top:1px solid rgba(242,240,233,.12) }
+.map-controls > .pixel-trigger { border-top:1px solid rgba(242,240,233,.12) }
+.pixel-trigger[aria-pressed="true"] { color:var(--mint);background:rgba(185,242,124,.12) }
+.pixel-trigger[aria-busy="true"] svg { animation:pixel-pulse 1s ease-in-out infinite alternate }
+@keyframes pixel-pulse { to { opacity:.35 } }
 .base-map-trigger[aria-expanded="true"] { color:var(--mint);background:rgba(185,242,124,.08) }
 .base-map-panel { position:absolute;right:calc(100% + 12px);top:50%;display:flex;flex-direction:column;box-sizing:border-box;width:max-content;max-width:calc(100vw - 92px);max-height:min(360px,calc(100dvh - 48px));border:1px solid rgba(242,240,233,.18);background:rgba(16,27,24,.97);box-shadow:0 10px 30px rgba(0,0,0,.25);transform:translateY(-50%) }
 .base-map-options { display:grid;grid-template-columns:40px;grid-auto-rows:40px;gap:8px;min-height:0;overflow-y:auto;padding:8px;overscroll-behavior:contain;scrollbar-width:thin }
@@ -111,4 +124,5 @@ button:focus-visible { outline:2px solid var(--mint);outline-offset:2px }
 @media (max-width:700px) { .map-controls { top:12px;right:12px } }
 @media (max-height:480px) { .base-map-panel { top:auto;bottom:0;max-height:210px;transform:none } }
 @media (prefers-reduced-motion:reduce) { .map-controls > button,.base-map-trigger,.base-map-option { transition:none } }
+@media (prefers-reduced-motion:reduce) { .pixel-trigger[aria-busy="true"] svg { animation:none } }
 </style>

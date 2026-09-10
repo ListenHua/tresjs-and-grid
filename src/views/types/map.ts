@@ -50,6 +50,8 @@ export interface MapViewState {
   bearing: number
 }
 
+export type MapRenderMode = 'standard' | 'pixel'
+
 export type SceneCommand = 'zoom-in' | 'zoom-out' | 'reset' | 'set-2d' | 'set-3d'
 
 export interface AreaRequest {

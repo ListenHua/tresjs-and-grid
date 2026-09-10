@@ -6,7 +6,7 @@ import SceneLegend from './components/SceneLegend.vue'
 import ProtectAreaList from './components/ProtectAreaList.vue'
 import { FEATURE_BY_ID, PROTECT_AREA_SITES } from './data/protectAreas'
 import { isValidFocusExtent } from './utils/mapNavigation'
-import type { AreaRequest, MapViewState, ProtectAreaFeature, ProtectAreaType, SceneCommand } from './types/map'
+import type { AreaRequest, MapRenderMode, MapViewState, ProtectAreaFeature, ProtectAreaType, SceneCommand } from './types/map'
 import { AREA_TYPE_COLORS, AREA_TYPE_STYLES, BASE_MAPS, MAP_VIEW_CONFIG } from './config'
 
 const status = ref<'loading' | 'ready' | 'error'>('loading')
@@ -16,6 +16,8 @@ const selected = ref<ProtectAreaFeature | null>(null)
 const hovered = ref<ProtectAreaFeature | null>(null)
 const regionsVisible = ref(true)
 const baseMapId = ref(BASE_MAPS[0]?.id ?? '')
+const renderMode = ref<MapRenderMode>('standard')
+const modeLoading = ref(false)
 const activeBaseMap = computed(() => BASE_MAPS.find(item => item.id === baseMapId.value) ?? null)
 const visibleTypes = ref<ProtectAreaType[]>(AREA_TYPE_STYLES.map(item => item.type))
 const command = reactive({ id: 0, type: 'reset' as SceneCommand })
@@ -64,7 +66,8 @@ function toggleType(type: ProtectAreaType) {
 
 <template>
   <main class="planning-workspace">
-    <MapScene :command="command" :initial-site-id="initialSiteId" :area-request="areaRequest" :regions-visible="regionsVisible" :base-map="activeBaseMap" :visible-types="visibleTypes"
+    <MapScene v-model:render-mode="renderMode" :command="command" :initial-site-id="initialSiteId" :area-request="areaRequest" :regions-visible="regionsVisible" :base-map="activeBaseMap" :visible-types="visibleTypes"
+      @mode-loading="modeLoading = $event" @locate-site="locateSite"
       @ready="setReady" @error="setError" @raster-error="rasterError = $event"
       @hover="hovered = $event" @select="selected = $event" @view="Object.assign(view, $event)" />
     <div class="map-shade" aria-hidden="true"></div>
@@ -93,7 +96,7 @@ function toggleType(type: ProtectAreaType) {
       </dl>
     </section>
 
-    <MapControls v-model:base-map-id="baseMapId" :view="view" :base-maps="BASE_MAPS" @command="runCommand" />
+    <MapControls v-model:base-map-id="baseMapId" v-model:render-mode="renderMode" :mode-loading="modeLoading" :view="view" :base-maps="BASE_MAPS" @command="runCommand" />
   </main>
 </template>
 

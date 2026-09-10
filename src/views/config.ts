@@ -39,11 +39,27 @@ export const MAP_VIEW_CONFIG = {
   zoom: 7.05,
   pitch: 46,
   bearing: 0,
-  minZoom: 6,
+  minZoom: 3,
   maxZoom: 18,
   projection: 'EPSG:3857',
   resetDuration: 650,
   dimensionDuration: 520,
+}
+
+export const PIXEL_MAP_CONFIG = {
+  landColor: '#426b59',
+  markerColor: '#b9f27c',
+  gapRatio: 0.12,
+  thicknessRatio: 0.12,
+  maxCells: 32000,
+  tileSize: 32,
+  maxCachedTiles: 128,
+  detailZoom: 10,
+  gridZoomOffset: 5,
+  overscan: 0.2,
+  refreshInterval: 140,
+  transitionDuration: 0.32,
+  workerTimeout: 15000,
 }
 
 export const MAP_FLIGHT_CONFIG = {
