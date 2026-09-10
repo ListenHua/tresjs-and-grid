@@ -1,6 +1,12 @@
 import { Extent, Point } from 'maptalks'
 import type { Map as MapInstance } from 'maptalks'
 import { MAP_FLIGHT_CONFIG } from '../config'
+import type { GeographicExtent } from './RasterAtlasManager'
+
+export function isValidFocusExtent(extent: GeographicExtent) {
+  return [extent.west, extent.south, extent.east, extent.north].every(Number.isFinite)
+    && extent.west < extent.east && extent.south < extent.north
+}
 
 export interface FocusPadding {
   paddingLeft: number

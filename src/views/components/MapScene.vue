@@ -5,7 +5,8 @@ import 'maptalks/dist/maptalks.css'
 import { useProtectAreaLayer } from '../hooks/useProtectAreaLayer'
 import { stopMapAnimation, useMapFlight } from '../hooks/useMapFlight'
 import { resolveRasterSource } from '../utils/RasterSource'
-import { getFocusPadding, getFocusView } from '../utils/mapNavigation'
+import { getFocusPadding, getFocusView, isValidFocusExtent } from '../utils/mapNavigation'
+import type { GeographicExtent } from '../utils/RasterAtlasManager'
 import { waitForMapArrival } from '../utils/waitForMapArrival'
 import MapFlightFog from './MapFlightFog.vue'
 import { FEATURE_BY_ID, SITE_BY_ID, getFeatureExtent } from '../data/protectAreas'
@@ -18,6 +19,7 @@ const props = defineProps<{
   baseMap: BaseMapConfig | null
   visibleTypes: ProtectAreaType[]
   areaRequest: AreaRequest | null
+  initialSiteId?: string | null
 }>()
 const emit = defineEmits<{
   ready: [count: number]
@@ -30,6 +32,8 @@ const emit = defineEmits<{
 
 const mapContainer = ref<HTMLElement | null>(null)
 const flightFog = ref<InstanceType<typeof MapFlightFog> | null>(null)
+const canvasVisible = ref(false)
+let disposed = false
 let map: maptalks.Map | null = null
 let sceneReady = false
 let pendingAreaRequest = props.areaRequest
@@ -89,6 +93,43 @@ function handleUserInput(event: Event) {
   cancelAreaRequest()
 }
 
+function getAreaFocusView(extent: GeographicExtent) {
+  const container = mapContainer.value
+  if (!map || !container || !isValidFocusExtent(extent)) return null
+  const viewport = container.getBoundingClientRect()
+  if (viewport.width <= 0 || viewport.height <= 0) return null
+  const overlays = Array.from(container.parentElement?.querySelectorAll<HTMLElement>('[data-map-overlay]') ?? [])
+    .map(element => {
+      const bounds = element.getBoundingClientRect()
+      return { kind: element.dataset.mapOverlay ?? '', left: bounds.left - viewport.left, right: bounds.right - viewport.left,
+        top: bounds.top - viewport.top, bottom: bounds.bottom - viewport.top }
+    })
+  const padding = getFocusPadding(viewport.width, viewport.height, overlays, map.getPitch())
+  const target = getFocusView(map, new maptalks.Extent(extent.west, extent.south, extent.east, extent.north), padding)
+  return [target.center.x, target.center.y, target.zoom].every(Number.isFinite) ? target : null
+}
+
+function applyInitialView() {
+  if (!map) return
+  let extent: GeographicExtent | undefined
+  const request = pendingAreaRequest || (focusRevision === 0 && props.command.id === 0) ? props.areaRequest : null
+  if (request?.type === 'zone') {
+    const feature = FEATURE_BY_ID.get(request.targetId)
+    if (feature) extent = getFeatureExtent(feature)
+  } else if (request?.type === 'site') {
+    extent = SITE_BY_ID.get(request.targetId)?.extent
+  } else if (focusRevision === 0 && props.command.id === 0 && props.initialSiteId) {
+    extent = SITE_BY_ID.get(props.initialSiteId)?.extent
+  }
+  if (!extent) return
+  try {
+    const target = getAreaFocusView(extent)
+    if (target) map.setCenterAndZoom(target.center, target.zoom)
+  } catch {
+    map.setCenterAndZoom(new maptalks.Coordinate(MAP_VIEW_CONFIG.center), MAP_VIEW_CONFIG.zoom)
+  }
+}
+
 async function processAreaRequest() {
   if (!map || !sceneReady || !pendingAreaRequest || !protectAreaLayer.isSelectionReady()) return
   const request = pendingAreaRequest
@@ -119,19 +160,9 @@ async function processAreaRequest() {
   pendingAreaRequest = null
   await nextTick()
   if (!map || !sceneReady || revision !== focusRevision || props.areaRequest?.id !== request.id) return
-  if (!Object.values(extent).every(Number.isFinite)) { mapFlight.cancel(); return }
-  const container = mapContainer.value
-  if (!container) { mapFlight.cancel(); return }
-  const viewport = container.getBoundingClientRect()
-  const overlays = Array.from(container.parentElement?.querySelectorAll<HTMLElement>('[data-map-overlay]') ?? [])
-    .map(element => {
-      const bounds = element.getBoundingClientRect()
-      return { kind: element.dataset.mapOverlay ?? '', left: bounds.left - viewport.left, right: bounds.right - viewport.left,
-        top: bounds.top - viewport.top, bottom: bounds.bottom - viewport.top }
-    })
-  const padding = getFocusPadding(viewport.width, viewport.height, overlays, map.getPitch())
   try {
-    const target = getFocusView(map, new maptalks.Extent(extent.west, extent.south, extent.east, extent.north), padding)
+    const target = getAreaFocusView(extent)
+    if (!target) { mapFlight.cancel(); return }
     mapFlight.flyTo(target, siteId)
   } catch (error) {
     mapFlight.cancel()
@@ -170,8 +201,9 @@ function executeCommand(type: SceneCommand) {
   }
 }
 
-onMounted(() => {
-  if (!mapContainer.value) return
+onMounted(async () => {
+  await nextTick()
+  if (disposed || !mapContainer.value) return
   try {
     const baseLayer = createBaseLayer(props.baseMap)
     map = new maptalks.Map(mapContainer.value, {
@@ -194,11 +226,15 @@ onMounted(() => {
       cancelAreaRequest()
       if (!protectAreaLayer.identify(event.coordinate).length) protectAreaLayer.clearSelection()
     })
+    applyInitialView()
+    canvasVisible.value = true
     syncRasterSource(baseLayer)
     protectAreaLayer.createLayer(map)
   } catch (error) {
     cancelAreaRequest()
     emit('error', error instanceof Error ? error.message : '地图初始化失败')
+  } finally {
+    if (!disposed) canvasVisible.value = true
   }
 })
 
@@ -233,6 +269,7 @@ watch(() => props.areaRequest, request => {
 }, { flush: 'post' })
 
 onBeforeUnmount(() => {
+  disposed = true
   sceneReady = false
   pendingAreaRequest = null
   focusRevision += 1
@@ -248,12 +285,13 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <div ref="mapContainer" class="map-canvas" tabindex="0" aria-label="广西原生境保护区三维地图"></div>
+  <div ref="mapContainer" class="map-canvas" :class="{ 'is-initializing': !canvasVisible }" tabindex="0" aria-label="广西原生境保护区三维地图"></div>
   <MapFlightFog ref="flightFog" />
 </template>
 
 <style scoped>
 .map-canvas { position: absolute; inset: 0; cursor: grab; background: #15201d; }
+.map-canvas.is-initializing { visibility:hidden }
 .map-canvas:active { cursor: grabbing; }.map-canvas.is-picking { cursor: pointer; }
 .map-canvas:focus-visible { outline:2px solid var(--mint);outline-offset:-2px }
 :deep(.maptalks-canvas-layer), :deep(.maptalks-front-layer) { outline: none; }

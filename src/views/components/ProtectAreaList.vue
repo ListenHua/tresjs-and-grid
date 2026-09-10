@@ -4,13 +4,15 @@ import { ChevronDown, EyeOff, List, LocateFixed, Search, X } from '@lucide/vue'
 import { AREA_TYPE_COLORS } from '../config'
 import { filterProtectAreaSites } from '../data/protectAreas'
 import type { ProtectAreaSite } from '../data/protectAreas'
-import type { ProtectAreaFeature, ProtectAreaType } from '../types/map'
+import type { AreaRequest, ProtectAreaFeature, ProtectAreaType } from '../types/map'
 
 const props = defineProps<{
   sites: ProtectAreaSite[]
   selectedFeatureId: string | null
   regionsVisible: boolean
   visibleTypes: ProtectAreaType[]
+  initialSiteId?: string | null
+  areaRequest?: AreaRequest | null
 }>()
 const emit = defineEmits<{
   'locate-site': [id: string]
@@ -20,7 +22,7 @@ const panelId = useId()
 const query = ref('')
 const compact = ref(typeof window !== 'undefined' && window.matchMedia('(max-width:900px)').matches)
 const expanded = ref(!compact.value)
-const expandedSiteId = ref<string | null>(null)
+const expandedSiteId = ref<string | null>(props.initialSiteId ?? null)
 const searchInput = ref<HTMLInputElement | null>(null)
 const scrollContainer = ref<HTMLElement | null>(null)
 const filteredSites = computed(() => filterProtectAreaSites(props.sites, query.value))
@@ -66,6 +68,11 @@ watch(() => props.selectedFeatureId, () => {
   void revealSelectedRow()
 }, { flush: 'post', immediate: true })
 watch(expanded, value => { if (value) void revealSelectedRow() }, { flush: 'post' })
+watch(() => props.areaRequest, request => {
+  if (request?.type !== 'site') return
+  expandedSiteId.value = request.targetId
+  if (compact.value) expanded.value = false
+}, { flush: 'post' })
 
 onMounted(() => {
   mediaQuery = window.matchMedia('(max-width:900px)')

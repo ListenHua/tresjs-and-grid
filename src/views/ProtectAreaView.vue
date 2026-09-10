@@ -5,6 +5,7 @@ import MapScene from './components/MapScene.vue'
 import SceneLegend from './components/SceneLegend.vue'
 import ProtectAreaList from './components/ProtectAreaList.vue'
 import { FEATURE_BY_ID, PROTECT_AREA_SITES } from './data/protectAreas'
+import { isValidFocusExtent } from './utils/mapNavigation'
 import type { AreaRequest, MapViewState, ProtectAreaFeature, ProtectAreaType, SceneCommand } from './types/map'
 import { AREA_TYPE_COLORS, AREA_TYPE_STYLES, BASE_MAPS, MAP_VIEW_CONFIG } from './config'
 
@@ -19,6 +20,8 @@ const activeBaseMap = computed(() => BASE_MAPS.find(item => item.id === baseMapI
 const visibleTypes = ref<ProtectAreaType[]>(AREA_TYPE_STYLES.map(item => item.type))
 const command = reactive({ id: 0, type: 'reset' as SceneCommand })
 const areaRequest = ref<AreaRequest | null>(null)
+const firstSite = PROTECT_AREA_SITES[0]
+const initialSiteId = firstSite && isValidFocusExtent(firstSite.extent) ? firstSite.id : null
 let areaRequestId = 0
 const view = reactive<MapViewState>({
   zoom: MAP_VIEW_CONFIG.zoom,
@@ -27,7 +30,14 @@ const view = reactive<MapViewState>({
 })
 const activeArea = computed(() => regionsVisible.value ? selected.value ?? hovered.value : null)
 
-function runCommand(type: SceneCommand) { command.type = type; command.id += 1 }
+function runCommand(type: SceneCommand) {
+  if (type === 'reset' && initialSiteId) {
+    locateSite(initialSiteId)
+    return
+  }
+  command.type = type
+  command.id += 1
+}
 function setReady() { status.value = 'ready'; statusMessage.value = '' }
 function setError(message: string) { status.value = 'error'; statusMessage.value = message }
 function locateSite(id: string) {
@@ -54,13 +64,14 @@ function toggleType(type: ProtectAreaType) {
 
 <template>
   <main class="planning-workspace">
-    <MapScene :command="command" :area-request="areaRequest" :regions-visible="regionsVisible" :base-map="activeBaseMap" :visible-types="visibleTypes"
+    <MapScene :command="command" :initial-site-id="initialSiteId" :area-request="areaRequest" :regions-visible="regionsVisible" :base-map="activeBaseMap" :visible-types="visibleTypes"
       @ready="setReady" @error="setError" @raster-error="rasterError = $event"
       @hover="hovered = $event" @select="selected = $event" @view="Object.assign(view, $event)" />
     <div class="map-shade" aria-hidden="true"></div>
 
     <div class="left-panels">
       <ProtectAreaList data-map-overlay="list" :sites="PROTECT_AREA_SITES" :selected-feature-id="selected?.id ?? null"
+        :initial-site-id="initialSiteId" :area-request="areaRequest"
         :regions-visible="regionsVisible" :visible-types="visibleTypes" @locate-site="locateSite" @select-zone="selectZone" />
       <SceneLegend v-model:regions-visible="regionsVisible" data-map-overlay="legend"
         :visible-types="visibleTypes" :status="rasterError && status === 'ready' ? 'error' : status"
