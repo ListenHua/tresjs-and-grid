@@ -184,7 +184,7 @@ onMounted(() => {
       maxZoom: MAP_VIEW_CONFIG.maxZoom,
       spatialReference: { projection: MAP_VIEW_CONFIG.projection },
       zoomControl: false,
-      attribution: { content: '底图', position: { left: 12, bottom: 0 } },
+      attribution: false,
     })
     map.on('zoomend moveend pitchend rotateend', reportView)
     map.on('resize', cancelAreaRequest)
@@ -257,6 +257,4 @@ onBeforeUnmount(() => {
 .map-canvas:active { cursor: grabbing; }.map-canvas.is-picking { cursor: pointer; }
 .map-canvas:focus-visible { outline:2px solid var(--mint);outline-offset:-2px }
 :deep(.maptalks-canvas-layer), :deep(.maptalks-front-layer) { outline: none; }
-:deep(.maptalks-attribution) { max-width:calc(100vw - 24px);padding:1px 4px;color:#b9c5be;background:rgba(16,27,24,.8);font-size:9px;line-height:1.5 }
-:deep(.maptalks-attribution a) { color:inherit }
 </style>
