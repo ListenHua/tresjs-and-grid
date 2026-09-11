@@ -5,7 +5,7 @@ import { ThreeLayer } from 'maptalks.three'
 import * as THREE from 'three'
 import { gsap } from 'gsap'
 import { AREA_TYPE_COLORS, EXTRUSION_CONFIG, PIXEL_MAP_CONFIG, PIXEL_REVEAL_CONFIG } from '../config'
-import { PROTECT_AREAS, PROTECT_AREA_SITES } from '../data/protectAreas'
+import { PROTECT_AREAS, PROTECT_AREA_SITES, SITE_BY_ID } from '../data/protectAreas'
 import type { ProtectAreaSite } from '../data/protectAreas'
 import type { ProtectAreaFeature, ProtectAreaType } from '../types/map'
 import type { GeographicExtent } from '../utils/RasterAtlasManager'
@@ -76,7 +76,7 @@ export function usePixelMapLayer(options: PixelMapOptions) {
   function syncSelection(immediate = false) {
     const selectedId = options.getSelection()?.id
     batches.forEach((batch, id) => {
-      const raised = id === selectedId || id === hoveredId
+      const raised = batch.count > 1 && (id === selectedId || id === hoveredId)
       const target = raised ? batch.userData.raisedScale as number : 1
       animations.get(id)?.kill()
       animations.delete(id)
@@ -426,6 +426,15 @@ export function usePixelMapLayer(options: PixelMapOptions) {
     }
     const feature = identify(event)
     if (feature) finishReveal()
+    // A single cell acts as a locator until zooming reveals the area's shape.
+    if (feature && batches.get(feature.id)?.count === 1) {
+      const site = SITE_BY_ID.get(feature.properties.BHDBM)
+      if (site) {
+        clearHover()
+        options.onLocate([site], site.extent)
+        return
+      }
+    }
     options.onSelect(feature?.id === options.getSelection()?.id ? null : feature)
   }
 
