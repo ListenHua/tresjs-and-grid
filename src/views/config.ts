@@ -47,8 +47,18 @@ export const MAP_VIEW_CONFIG = {
 }
 
 export const PIXEL_MAP_CONFIG = {
+  // 地形颜色使用六位十六进制；保护区颜色由下方 AREA_TYPE_STYLES 统一配置，与图例保持一致。
   landColor: '#426b59',
+  // 聚合点及数量文字，不受地形光照影响。
   markerColor: '#b9f27c',
+  markerLineColor: '#15201d',
+  markerTextColor: '#f2f0e9',
+  markerTextHaloColor: '#15201d',
+  material: {
+    ambient: 0.35, // 环境光强度（0～1），越小整体越暗。
+    diffuse: 0.45, // 漫反射强度（0～1），控制受光面的亮度。
+    shininess: 0, // 高光锐度，0 保持当前哑光效果。
+  },
   gapRatio: 0.12,
   thicknessRatio: 0.12,
   maxCells: 32000,

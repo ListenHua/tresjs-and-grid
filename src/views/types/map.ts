@@ -59,3 +59,10 @@ export interface AreaRequest {
   type: 'site' | 'zone'
   targetId: string
 }
+
+export interface GeographicExtent {
+  west: number
+  south: number
+  east: number
+  north: number
+}

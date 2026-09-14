@@ -6,14 +6,13 @@ import { useProtectAreaLayer } from '../hooks/useProtectAreaLayer'
 import { usePixelMapLayer } from '../hooks/usePixelMapLayer'
 import { stopMapAnimation, useMapFlight } from '../hooks/useMapFlight'
 import { resolveRasterSource } from '../utils/RasterSource'
-import { getFocusPadding, getFocusView, isValidFocusExtent } from '../utils/mapNavigation'
-import type { GeographicExtent } from '../utils/RasterAtlasManager'
-import { waitForMapArrival } from '../utils/waitForMapArrival'
+import { getFocusPadding, getFocusView, isValidFocusExtent, waitForMapArrival } from '../utils/mapNavigation'
+import type { GeographicExtent, AreaRequest, BaseMapConfig, MapRenderMode, MapViewState, ProtectAreaFeature, ProtectAreaType, SceneCommand } from '../types/map'
+import china from '../data/china-boundary.json'
 import MapFlightFog from './MapFlightFog.vue'
 import PixelMapFog from './PixelMapFog.vue'
 import { FEATURE_BY_ID, SITE_BY_ID, getFeatureExtent } from '../data/protectAreas'
 import { MAP_VIEW_CONFIG, PIXEL_MAP_CONFIG, PIXEL_FOG_CONFIG } from '../config'
-import type { AreaRequest, BaseMapConfig, MapRenderMode, MapViewState, ProtectAreaFeature, ProtectAreaType, SceneCommand } from '../types/map'
 
 const props = defineProps<{
   command: { id: number; type: SceneCommand }
@@ -141,11 +140,13 @@ async function switchRenderMode(mode: MapRenderMode) {
       protectAreaLayer.setRasterSource(null)
       protectAreaLayer.setActive(false)
       map.removeBaseLayer()
+      map.getLayer('china-boundary')?.hide()
       pixelLayer.setActive(true)
       activeMode = 'pixel'
       pixelLayer.startReveal()
     } else {
       pixelLayer.setActive(false)
+      map.getLayer('china-boundary')?.show()
       const baseLayer = createBaseLayer(props.baseMap)
       if (baseLayer) map.setBaseLayer(baseLayer)
       else map.removeBaseLayer()
@@ -160,6 +161,7 @@ async function switchRenderMode(mode: MapRenderMode) {
     if (stale()) return
     pixelLayer.setActive(false)
     activeMode = 'standard'
+    map?.getLayer('china-boundary')?.show()
     protectAreaLayer.setActive(true)
     const baseLayer = createBaseLayer(props.baseMap)
     if (baseLayer && map) map.setBaseLayer(baseLayer)
@@ -277,6 +279,24 @@ async function processAreaRequest() {
   }
 }
 
+/** Reuse the same outer rings as the pixel land mask, including island outlines. */
+function createChinaBoundaryLayer() {
+  const rings = china.features.flatMap(feature => feature.geometry.coordinates.map(polygon => polygon[0]!))
+  const outline = new maptalks.MultiLineString(rings, {
+    symbol: [
+      { lineColor: '#14201d', lineWidth: 4, lineOpacity: 0.65 },
+      { lineColor: '#9dbfae', lineWidth: 1.5, lineOpacity: 0.9 },
+    ],
+  })
+  return new maptalks.VectorLayer('china-boundary', [outline], {
+    geometryEvents: false,
+    hitDetect: false,
+    forceRenderOnMoving: true,
+    forceRenderOnZooming: true,
+    forceRenderOnRotating: true,
+  })
+}
+
 function createBaseLayer(baseMap: BaseMapConfig | null) {
   return baseMap?.options
     ? new maptalks.TileLayer(`base-${baseMap.id}`, { ...baseMap.options })
@@ -325,6 +345,7 @@ onMounted(async () => {
       zoomControl: false,
       attribution: false,
     })
+    createChinaBoundaryLayer().addTo(map)
     map.on('zoomend moveend pitchend rotateend', reportView)
     map.on('resize', handleResize)
     inputContainer = mapContainer.value

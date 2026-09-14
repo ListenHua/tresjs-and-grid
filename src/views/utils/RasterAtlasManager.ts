@@ -1,12 +1,6 @@
+import type { GeographicExtent } from '../types/map'
 import * as THREE from 'three'
 import type { RasterSource } from './RasterSource'
-
-export interface GeographicExtent {
-  west: number
-  south: number
-  east: number
-  north: number
-}
 
 interface PixelPoint {
   x: number

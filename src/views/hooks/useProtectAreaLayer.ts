@@ -15,9 +15,9 @@ import {
   RASTER_TOP_CONFIG,
   THREE_LAYER_CONFIG,
 } from '../config'
-import type { ProtectAreaFeature, ProtectAreaType } from '../types/map'
+import type { ProtectAreaFeature, ProtectAreaType, GeographicExtent } from '../types/map'
 import { RasterAtlasManager } from '../utils/RasterAtlasManager'
-import type { GeographicExtent, RasterAtlas } from '../utils/RasterAtlasManager'
+import type { RasterAtlas } from '../utils/RasterAtlasManager'
 import type { RasterSource } from '../utils/RasterSource'
 
 interface ProtectAreaLayerOptions {

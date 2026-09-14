@@ -1,6 +1,5 @@
 import protectAreaJson from './protect_area.json'
-import type { ProtectAreaCollection, ProtectAreaFeature } from '../types/map'
-import type { GeographicExtent } from '../utils/RasterAtlasManager'
+import type { ProtectAreaCollection, ProtectAreaFeature, GeographicExtent } from '../types/map'
 
 export interface ProtectAreaSite {
   id: string

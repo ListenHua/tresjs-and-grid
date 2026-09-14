@@ -6,13 +6,10 @@ import { gsap } from 'gsap'
 import { AREA_TYPE_COLORS, EXTRUSION_CONFIG, PIXEL_MAP_CONFIG, PIXEL_REVEAL_CONFIG } from '../config'
 import { PROTECT_AREAS, PROTECT_AREA_SITES, SITE_BY_ID } from '../data/protectAreas'
 import type { ProtectAreaSite } from '../data/protectAreas'
-import type { ProtectAreaFeature, ProtectAreaType } from '../types/map'
-import type { GeographicExtent } from '../utils/RasterAtlasManager'
-import { MERCATOR_WORLD_SIZE, projectPixelPoint, resolvePixelLevel, unprojectPixelPoint } from '../utils/pixelGrid'
+import type { ProtectAreaFeature, ProtectAreaType, GeographicExtent } from '../types/map'
+import { MERCATOR_WORLD_SIZE, projectPixelPoint, resolvePixelLevel, unprojectPixelPoint, getPixelRevealAmount, getPixelRevealStart } from '../utils/pixelGrid'
 import type { PixelBounds, PixelGridRequest, PixelGridResult } from '../utils/pixelGrid'
-import type { PixelCell } from '../utils/PixelColumnLayer'
-import type { MaptalksView } from '../utils/maptalksDeckView'
-import { getPixelRevealAmount, getPixelRevealStart } from '../utils/pixelRevealTiming'
+import type { PixelCell, MaptalksView } from '../utils/pixelDeck'
 
 interface PixelMapOptions {
   container: Ref<HTMLElement | null>
@@ -77,7 +74,7 @@ export function usePixelMapLayer(options: PixelMapOptions) {
       revealTime: revealTime.value,
       updateTriggers: { getElevation: [selectedId, hoveredId, thickness, raisedHeight], getFillColor: [visibleTypes.join(',')] },
       transitions: { getElevation: immediate || reducedMotion || !active ? 0 : EXTRUSION_CONFIG.raiseDuration * 1000 },
-      material: { ambient: 0.35, diffuse: 0.45, shininess: 0 },
+      material: PIXEL_MAP_CONFIG.material,
     })) })
   }
 
@@ -127,9 +124,9 @@ export function usePixelMapLayer(options: PixelMapOptions) {
       const marker = new maptalks.Marker([longitude, latitude], {
         symbol: {
           markerType: 'square', markerWidth: 12, markerHeight: 12,
-          markerFill: PIXEL_MAP_CONFIG.markerColor, markerLineColor: '#15201d', markerLineWidth: 2,
-          textName: sites.length > 1 ? String(sites.length) : '', textSize: 11, textFill: '#f2f0e9',
-          textHaloFill: '#15201d', textHaloRadius: 2, textDy: -16,
+          markerFill: PIXEL_MAP_CONFIG.markerColor, markerLineColor: PIXEL_MAP_CONFIG.markerLineColor, markerLineWidth: 2,
+          textName: sites.length > 1 ? String(sites.length) : '', textSize: 11, textFill: PIXEL_MAP_CONFIG.markerTextColor,
+          textHaloFill: PIXEL_MAP_CONFIG.markerTextHaloColor, textHaloRadius: 2, textDy: -16,
           markerOpacity: opacity, textOpacity: opacity,
         },
         properties: { sites, extent, revealStart },

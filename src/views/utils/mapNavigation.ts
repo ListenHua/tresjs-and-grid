@@ -1,7 +1,7 @@
 import { Extent, Point } from 'maptalks'
 import type { Map as MapInstance } from 'maptalks'
 import { MAP_FLIGHT_CONFIG } from '../config'
-import type { GeographicExtent } from './RasterAtlasManager'
+import type { GeographicExtent } from '../types/map'
 
 export function isValidFocusExtent(extent: GeographicExtent) {
   return [extent.west, extent.south, extent.east, extent.north].every(Number.isFinite)
@@ -64,4 +64,41 @@ export function getFocusPadding(width: number, height: number, overlays: MapOver
     paddingTop: paddingTop * verticalScale,
     paddingBottom: paddingBottom * verticalScale,
   }
+}
+
+export function waitForMapArrival(map: MapInstance, rasterReady: () => boolean, signal: AbortSignal) {
+  return new Promise<void>(resolve => {
+    if (signal.aborted) { resolve(); return }
+    let baseLayer = map.getBaseLayer()
+    let baseReady = !baseLayer
+    let timer: ReturnType<typeof setTimeout> | undefined
+
+    function finish() {
+      clearTimeout(timer)
+      baseLayer?.off('layerload', onBaseReady)
+      signal.removeEventListener('abort', finish)
+      resolve()
+    }
+
+    function onBaseReady() {
+      baseReady = true
+    }
+
+    function check() {
+      if (signal.aborted) { finish(); return }
+      const currentLayer = map.getBaseLayer()
+      if (currentLayer !== baseLayer) {
+        baseLayer?.off('layerload', onBaseReady)
+        baseLayer = currentLayer
+        baseReady = !baseLayer
+        baseLayer?.on('layerload', onBaseReady)
+      }
+      if (baseReady && rasterReady()) finish()
+      else timer = setTimeout(check, 40)
+    }
+
+    baseLayer?.on('layerload', onBaseReady)
+    signal.addEventListener('abort', finish, { once: true })
+    check()
+  })
 }

@@ -1,9 +1,8 @@
 import china from '../data/china-boundary.json'
 import { PROTECT_AREAS } from '../data/protectAreas'
 import { AREA_TYPE_FILL_ORDER, PIXEL_MAP_CONFIG } from '../config'
-import { intersectsPixelBounds, MERCATOR_WORLD_SIZE, pixelRowSpans, preparePixelPolygons } from '../utils/pixelGrid'
+import { intersectsPixelBounds, MERCATOR_WORLD_SIZE, pixelRowSpans, preparePixelPolygons, getPixelRevealStart } from '../utils/pixelGrid'
 import type { PixelBounds, PixelGridRequest, PixelGridResult, PixelPolygon } from '../utils/pixelGrid'
-import { getPixelRevealStart } from '../utils/pixelRevealTiming'
 
 const land = china.features.flatMap(feature => preparePixelPolygons(feature.geometry.coordinates))
 const zones = PROTECT_AREAS.features.map((feature, index) => ({
