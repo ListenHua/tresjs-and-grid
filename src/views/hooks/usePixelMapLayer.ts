@@ -1,17 +1,17 @@
 import type { Ref } from 'vue'
 import * as maptalks from 'maptalks'
 import type { HandlerFnResultType } from 'maptalks/dist/core/Eventable'
-import { ThreeLayer } from 'maptalks.three'
-import * as THREE from 'three'
+import type { Deck } from '@deck.gl/core'
 import { gsap } from 'gsap'
 import { AREA_TYPE_COLORS, EXTRUSION_CONFIG, PIXEL_MAP_CONFIG, PIXEL_REVEAL_CONFIG } from '../config'
 import { PROTECT_AREAS, PROTECT_AREA_SITES, SITE_BY_ID } from '../data/protectAreas'
 import type { ProtectAreaSite } from '../data/protectAreas'
 import type { ProtectAreaFeature, ProtectAreaType } from '../types/map'
 import type { GeographicExtent } from '../utils/RasterAtlasManager'
-import { projectPixelPoint, resolvePixelLevel, unprojectPixelPoint } from '../utils/pixelGrid'
+import { MERCATOR_WORLD_SIZE, projectPixelPoint, resolvePixelLevel, unprojectPixelPoint } from '../utils/pixelGrid'
 import type { PixelBounds, PixelGridRequest, PixelGridResult } from '../utils/pixelGrid'
-import { createPixelRevealMaterial } from '../utils/pixelRevealMaterial'
+import type { PixelCell } from '../utils/PixelColumnLayer'
+import type { MaptalksView } from '../utils/maptalksDeckView'
 import { getPixelRevealAmount, getPixelRevealStart } from '../utils/pixelRevealTiming'
 
 interface PixelMapOptions {
@@ -25,14 +25,22 @@ interface PixelMapOptions {
   onError: (message: string) => void
 }
 
+const CELL_VERTICES = [[-0.5, -0.5], [0.5, -0.5], [0.5, 0.5], [-0.5, 0.5]] as [number, number][]
+const VIEW_EVENTS = 'moving zooming rotating pitching moveend zoomend rotateend pitchend resize'
+
 export function usePixelMapLayer(options: PixelMapOptions) {
   let map: maptalks.Map | null = null
-  let layer: ThreeLayer | null = null
+  let deck: Deck<MaptalksView> | null = null
+  let renderer: typeof import('../utils/pixelDeck') | null = null
+  let canvas: HTMLCanvasElement | null = null
   let markers: maptalks.VectorLayer | null = null
   let worker: Worker | null = null
   let initialization: Promise<void> | null = null
   let finishInitialization: (() => void) | null = null
-  let group: THREE.Group | null = null
+  let cells: PixelCell[][] = [[], []]
+  let origin: [number, number] = [0, 0]
+  let thickness = 0
+  let raisedHeight = 0
   let active = false
   let engaged = false
   let disposed = false
@@ -47,49 +55,38 @@ export function usePixelMapLayer(options: PixelMapOptions) {
   let revealArmed = false
   let revealTween: gsap.core.Tween | null = null
   const revealTime = { value: PIXEL_REVEAL_CONFIG.duration }
-  const pending = new Map<number, { resolve: (ready: boolean) => void; reject: (error: Error) => void; timer: ReturnType<typeof setTimeout> }>()
-  const batches = new Map<string, THREE.InstancedMesh>()
-  const animations = new Map<string, gsap.core.Tween>()
-  const raycaster = new THREE.Raycaster()
-  const pointer = new THREE.Vector2()
+  let pending: { request: PixelGridRequest; key: string; resolve: (ready: boolean) => void; reject: (error: Error) => void; timer: ReturnType<typeof setTimeout> } | null = null
+  const cellCounts = new Map<string, number>()
   const supportsHover = window.matchMedia('(hover: hover) and (pointer: fine)').matches
   const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches
 
-  function releaseGroup() {
-    animations.forEach(animation => animation.kill())
-    animations.clear()
-    if (group) {
-      layer?.removeMesh(group, false)
-      group.traverse(object => {
-        if (object instanceof THREE.InstancedMesh) {
-          object.geometry.dispose()
-          const materials = Array.isArray(object.material) ? object.material : [object.material]
-          materials.forEach(material => material.dispose())
-          object.dispose()
-        }
-      })
-    }
-    group = null
-    batches.clear()
+  function syncSelection(immediate = false) {
+    if (!deck || !map || !renderer) return
+    const selectedId = options.getSelection()?.id
+    const visibleTypes = options.getRegionsVisible() ? options.getVisibleTypes() : []
+    deck.setProps({ layers: cells.map((data, index) => new renderer!.PixelColumnLayer({
+      id: `pixel-${index}`, data, visible: active, pickable: index === 1,
+      coordinateSystem: renderer!.COORDINATE_SYSTEM.CARTESIAN,
+      diskResolution: 4, vertices: CELL_VERTICES,
+      radius: 1, radiusUnits: 'common', coverage: 1 - PIXEL_MAP_CONFIG.gapRatio,
+      getPosition: cell => cell.position,
+      getFillColor: cell => !cell.feature || visibleTypes.includes(cell.feature.properties.BHDLX) ? cell.color : [0, 0, 0, 0],
+      getElevation: cell => thickness + (cell.feature && (cellCounts.get(cell.feature.id) ?? 0) > 1
+        && (cell.feature.id === selectedId || cell.feature.id === hoveredId) ? raisedHeight : 0),
+      elevationScale: Math.max(0.001, Math.min(1, map!.getPitch() / 10)),
+      revealTime: revealTime.value,
+      updateTriggers: { getElevation: [selectedId, hoveredId, thickness, raisedHeight], getFillColor: [visibleTypes.join(',')] },
+      transitions: { getElevation: immediate || reducedMotion || !active ? 0 : EXTRUSION_CONFIG.raiseDuration * 1000 },
+      material: { ambient: 0.35, diffuse: 0.45, shininess: 0 },
+    })) })
   }
 
-  function syncSelection(immediate = false) {
-    const selectedId = options.getSelection()?.id
-    batches.forEach((batch, id) => {
-      const raised = batch.count > 1 && (id === selectedId || id === hoveredId)
-      const target = raised ? batch.userData.raisedScale as number : 1
-      animations.get(id)?.kill()
-      animations.delete(id)
-      if (immediate || reducedMotion || !active) batch.scale.z = target
-      else animations.set(id, gsap.to(batch.scale, {
-        z: target,
-        duration: raised ? EXTRUSION_CONFIG.raiseDuration : EXTRUSION_CONFIG.lowerDuration,
-        ease: raised ? EXTRUSION_CONFIG.raiseEase : EXTRUSION_CONFIG.lowerEase,
-        onUpdate: () => layer?.renderScene(),
-        onComplete: () => { animations.delete(id) },
-      }))
-    })
-    layer?.renderScene()
+  function syncView() {
+    if (!deck || !map || !active) return
+    const size = map.getSize()
+    deck.setProps({ width: size.width, height: size.height, views: renderer!.createMaptalksDeckView(map, origin) })
+    syncSelection()
+    deck.redraw('map camera')
   }
 
   function clearHover() {
@@ -99,10 +96,6 @@ export function usePixelMapLayer(options: PixelMapOptions) {
       options.onHover(null)
     }
     options.container.value?.classList.remove('is-picking')
-  }
-
-  function syncPitch() {
-    if (group && map) group.scale.z = Math.max(0.001, Math.min(1, map.getPitch() / 10))
   }
 
   function createMarkers(request: PixelGridRequest, result: PixelGridResult) {
@@ -147,94 +140,86 @@ export function usePixelMapLayer(options: PixelMapOptions) {
   }
 
   function applyGrid(request: PixelGridRequest, result: PixelGridResult) {
-    if (!layer || !map) return
-    const nextGroup = new THREE.Group()
-    const originCoordinate = unprojectPixelPoint((request.bounds[0] + request.bounds[2]) / 2, (request.bounds[1] + request.bounds[3]) / 2)
-    const origin = layer.coordinateToVector3(originCoordinate)
-    nextGroup.position.copy(origin)
-    const width = Math.abs(layer.coordinateToVector3(unprojectPixelPoint(request.bounds[0] + result.size, request.bounds[1])).x
-      - layer.coordinateToVector3(unprojectPixelPoint(request.bounds[0], request.bounds[1])).x)
-    const minimumSize = result.sizes.reduce((minimum, size) => Math.min(minimum, size), result.size)
-    const thickness = width * minimumSize / result.size * PIXEL_MAP_CONFIG.thicknessRatio
-    const cellsByOwner = new Map<number, number[]>()
+    if (!deck || !map) return
+    const resolution = map.getGLRes()
+    const center = new maptalks.Coordinate(unprojectPixelPoint(
+      (request.bounds[0] + request.bounds[2]) / 2, (request.bounds[1] + request.bounds[3]) / 2))
+    const point = map.coordToPointAtRes(center, resolution)
+    origin = [point.x, point.y]
+    thickness = result.sizes.reduce((minimum, size) => Math.min(minimum, size), result.size) / resolution * PIXEL_MAP_CONFIG.thicknessRatio
+    raisedHeight = map.altitudeToPoint(EXTRUSION_CONFIG.height, resolution, center)
+    clearHover()
+    cells = [[], []]
+    cellCounts.clear()
     result.owners.forEach((owner, index) => {
-      const indices = cellsByOwner.get(owner) ?? []
-      indices.push(index)
-      cellsByOwner.set(owner, indices)
-    })
-    const nextBatches = new Map<string, THREE.InstancedMesh>()
-    const transform = new THREE.Object3D()
-    cellsByOwner.forEach((indices, owner) => {
       const feature = owner >= 0 ? PROTECT_AREAS.features[owner] : undefined
       const color = feature ? AREA_TYPE_COLORS[feature.properties.BHDLX] : PIXEL_MAP_CONFIG.landColor
-      const material = result.reveal ? createPixelRevealMaterial(color, revealTime) : new THREE.MeshLambertMaterial({ color })
-      const batch = new THREE.InstancedMesh(new THREE.BoxGeometry(1, 1, 1), material, indices.length)
-      const starts = new Float32Array(indices.length)
-      indices.forEach((cellIndex, instanceIndex) => {
-        const cellWidth = width * result.sizes[cellIndex]! / result.size
-        const coordinate = unprojectPixelPoint(result.cells[cellIndex * 2]!, result.cells[cellIndex * 2 + 1]!)
-        transform.position.copy(layer!.coordinateToVector3(coordinate)).sub(origin)
-        transform.position.z = thickness / 2
-        transform.scale.set(cellWidth * (1 - PIXEL_MAP_CONFIG.gapRatio), cellWidth * (1 - PIXEL_MAP_CONFIG.gapRatio), thickness)
-        transform.updateMatrix()
-        batch.setMatrixAt(instanceIndex, transform.matrix)
-        starts[instanceIndex] = result.starts[cellIndex]!
+      const coordinate = new maptalks.Coordinate(unprojectPixelPoint(result.cells[index * 2]!, result.cells[index * 2 + 1]!))
+      const position = map!.coordToPointAtRes(coordinate, resolution)
+      cells[feature ? 1 : 0]!.push({
+        position: [position.x - origin[0], position.y - origin[1], 0],
+        size: result.sizes[index]! / resolution, start: result.starts[index]!, feature,
+        color: [1, 3, 5].map(offset => parseInt(color.slice(offset, offset + 2), 16)) as [number, number, number],
       })
-      batch.geometry.setAttribute('pixelRevealStart', new THREE.InstancedBufferAttribute(starts, 1))
-      batch.instanceMatrix.needsUpdate = true
-      batch.computeBoundingSphere()
-      if (feature) {
-        batch.userData.feature = feature
-        batch.userData.raisedScale = 1 + Math.abs(layer!.altitudeToVector3(EXTRUSION_CONFIG.height, EXTRUSION_CONFIG.height, originCoordinate).x) / thickness
-        nextBatches.set(feature.id, batch)
-      }
-      nextGroup.add(batch)
+      if (feature) cellCounts.set(feature.id, (cellCounts.get(feature.id) ?? 0) + 1)
     })
-    clearHover()
-    releaseGroup()
-    group = nextGroup
-    group.visible = active
-    nextBatches.forEach((batch, id) => batches.set(id, batch))
-    syncPitch()
-    layer.addMesh(group, false)
+    deck.setProps({ views: renderer!.createMaptalksDeckView(map, origin) })
     syncSelection(true)
     createMarkers(request, result)
-    layer.renderScene()
   }
 
-  function failPending(error: Error) {
-    requestedKey = ''
-    pending.forEach(job => { clearTimeout(job.timer); job.reject(error) })
-    pending.clear()
+  function settlePending(ready: boolean, error?: Error) {
+    if (!pending) return
+    clearTimeout(pending.timer)
+    const job = pending
+    pending = null
+    if (error) { requestedKey = ''; job.reject(error) }
+    else job.resolve(ready)
   }
 
   function initialize(mapInstance: maptalks.Map) {
     if (initialization) return initialization
-    map = mapInstance
-    worker = new Worker(new URL('../workers/pixelGrid.worker.ts', import.meta.url), { type: 'module' })
-    initialization = new Promise<void>(resolve => { finishInitialization = resolve })
-    worker.onerror = () => {
-      const error = new Error('像素地图计算线程加载失败，请刷新后重试')
-      failPending(error)
-      if (engaged) options.onError(error.message)
-    }
-    layer = new ThreeLayer('pixel-map', { forceRenderOnMoving: true, forceRenderOnRotating: true, forceRenderOnZooming: true, geometryEvents: false })
-    layer.prepareToDraw = (_gl, scene) => {
-      scene.add(new THREE.HemisphereLight('#ffffff', '#315342', 2))
-      const light = new THREE.DirectionalLight('#ffffff', 1.4)
-      light.position.set(-3, -5, 8)
-      scene.add(light)
-      finishInitialization?.()
-      finishInitialization = null
-      return []
-    }
-    layer.addTo(map)
-    markers = new maptalks.VectorLayer('pixel-sites', [], { geometryEvents: false }).addTo(map)
-    markers.hide()
-    map.on('moving zooming moveend zoomend resize rotateend pitchend', scheduleRefresh)
-    map.on('pitching pitchend', syncPitch)
-    map.on('mousemove', handleHover)
-    options.container.value?.addEventListener('pointerleave', clearHover)
+    initialization = import('../utils/pixelDeck').then(runtime => {
+      if (disposed) return
+      renderer = runtime
+      map = mapInstance
+      worker = new Worker(new URL('../workers/pixelGrid.worker.ts', import.meta.url), { type: 'module' })
+      const ready = new Promise<void>(resolve => { finishInitialization = resolve })
+      worker.onerror = () => {
+        const error = new Error('像素地图计算线程加载失败，请刷新后重试')
+        settlePending(false, error)
+        if (engaged) options.onError(error.message)
+      }
+      worker.onmessage = ({ data: result }: MessageEvent<PixelGridResult>) => {
+        if (!pending || result.id !== pending.request.id || !engaged || disposed) return
+        if (result.error) { settlePending(false, new Error(result.error)); return }
+        try {
+          applyGrid(pending.request, result)
+          appliedKey = pending.key
+          settlePending(true)
+        } catch (error) {
+          settlePending(false, error instanceof Error ? error : new Error('像素图层渲染失败'))
+        }
+      }
+      canvas = document.createElement('canvas')
+      canvas.className = 'pixel-deck-canvas'
+      canvas.style.cssText = 'position:absolute;inset:0;pointer-events:none;display:none'
+      // A separate stacking context keeps positioned deck canvas below map markers.
+      map.getPanels().backStatic.append(canvas)
+      deck = new runtime.Deck({
+        canvas, controller: false, views: runtime.createMaptalksDeckView(map, origin), viewState: {},
+        width: map.width, height: map.height,
+        onLoad: () => { finishInitialization?.(); finishInitialization = null },
+        onError: error => { settlePending(false, error); if (engaged) options.onError(error.message) },
+      })
+      markers = new maptalks.VectorLayer('pixel-sites', [], { geometryEvents: false }).addTo(map)
+      markers.hide()
+      map.on(VIEW_EVENTS, handleGridViewChange)
+      map.on(VIEW_EVENTS, syncView)
+      map.on('mousemove', handleHover)
+      options.container.value?.addEventListener('pointerleave', clearHover)
+      return ready
+    })
     return initialization
   }
 
@@ -257,46 +242,19 @@ export function usePixelMapLayer(options: PixelMapOptions) {
     const grid = frozenGrid ?? getViewportGrid(map)
     if (!grid) return Promise.resolve(false)
     const visibleTypes = options.getRegionsVisible() ? [...options.getVisibleTypes()] : []
-    batches.forEach(batch => { batch.visible = visibleTypes.includes((batch.userData.feature as ProtectAreaFeature).properties.BHDLX) })
+    syncSelection()
     if (!options.getRegionsVisible()) markers?.clear()
     const request: PixelGridRequest = { id: revision + 1, ...grid, visibleTypes }
     const key = JSON.stringify({ ...request, id: 0 })
     if (key === requestedKey) return latestWork
     requestedKey = key
     revision = request.id
+    settlePending(false)
     latestWork = new Promise<boolean>((resolve, reject) => {
-      const timer = setTimeout(() => {
-        pending.delete(request.id)
-        if (request.id !== revision || !engaged || disposed) { resolve(false); return }
-        if (requestedKey === key) requestedKey = ''
-        reject(new Error('像素地图生成超时，请重新切换模式'))
-      }, PIXEL_MAP_CONFIG.workerTimeout)
-      pending.set(request.id, { resolve, reject, timer })
-      worker!.onmessage = (event: MessageEvent<PixelGridResult>) => {
-        const result = event.data
-        const job = pending.get(result.id)
-        if (!job) return
-        clearTimeout(job.timer)
-        pending.delete(result.id)
-        if (result.id !== revision || !engaged || disposed) { job.resolve(false); return }
-        if (result.error) { requestedKey = ''; job.reject(new Error(result.error)); return }
-        try {
-          applyGrid(request, result)
-          appliedKey = key
-          job.resolve(true)
-        } catch (error) {
-          requestedKey = ''
-          job.reject(error instanceof Error ? error : new Error('像素图层渲染失败'))
-        }
-      }
-      try {
-        worker!.postMessage(request)
-      } catch (error) {
-        clearTimeout(timer)
-        pending.delete(request.id)
-        if (requestedKey === key) requestedKey = ''
-        reject(error instanceof Error ? error : new Error('像素地图任务发送失败'))
-      }
+      const timer = setTimeout(() => settlePending(false, new Error('像素地图生成超时，请重新切换模式')), PIXEL_MAP_CONFIG.workerTimeout)
+      pending = { request, key, resolve, reject, timer }
+      try { worker!.postMessage(request) }
+      catch (error) { settlePending(false, error instanceof Error ? error : new Error('像素地图任务发送失败')) }
     })
     return latestWork
   }
@@ -304,6 +262,12 @@ export function usePixelMapLayer(options: PixelMapOptions) {
   function scheduleRefresh() {
     if (!engaged || frozenGrid || refreshTimer) return
     refreshTimer = setTimeout(() => { void refreshNow().catch(error => options.onError(error.message)) }, PIXEL_MAP_CONFIG.refreshInterval)
+  }
+
+  function handleGridViewChange() {
+    if (!active) return
+    if (frozenGrid) finishReveal(true)
+    else scheduleRefresh()
   }
 
   async function prepare(mapInstance: maptalks.Map, animate = false) {
@@ -345,7 +309,8 @@ export function usePixelMapLayer(options: PixelMapOptions) {
   function setActive(value: boolean) {
     active = value
     engaged = value
-    if (value) { if (group) group.visible = true; layer?.show(); markers?.show(); syncSelection(true); scheduleRefresh() }
+    if (canvas) canvas.style.display = value ? 'block' : 'none'
+    if (value) { markers?.show(); syncView(); syncSelection(true); scheduleRefresh() }
     else {
       revealTween?.kill()
       revealTween = null
@@ -358,10 +323,9 @@ export function usePixelMapLayer(options: PixelMapOptions) {
       clearTimeout(refreshTimer)
       refreshTimer = undefined
       clearHover()
-      layer?.hide()
+      syncSelection(true)
       markers?.hide()
-      pending.forEach(job => { clearTimeout(job.timer); job.resolve(false) })
-      pending.clear()
+      settlePending(false)
     }
   }
 
@@ -370,23 +334,29 @@ export function usePixelMapLayer(options: PixelMapOptions) {
       const opacity = getPixelRevealAmount(revealTime.value, marker.getProperties()?.revealStart ?? 0)
       marker.updateSymbol({ markerOpacity: opacity, textOpacity: opacity })
     })
-    layer?.renderScene()
+    syncSelection()
   }
 
-  function finishReveal() {
+  function finishReveal(immediate = false) {
     if (!revealArmed && !revealTween && !frozenGrid) return
+    if (immediate && frozenGrid?.reveal && map) {
+      // Drop the overview cells before the camera reveals them. Keep nearby detail
+      // on screen until the worker returns the grid for the new viewport.
+      const detailSize = MERCATOR_WORLD_SIZE / 2 ** frozenGrid.reveal.focusLevel / map.getGLRes()
+      cells = cells.map(data => data.filter(cell => cell.size <= detailSize * 1.001))
+      cellCounts.clear()
+      cells[1]!.forEach(cell => {
+        if (cell.feature) cellCounts.set(cell.feature.id, (cellCounts.get(cell.feature.id) ?? 0) + 1)
+      })
+    }
     revealTween?.kill()
     revealTween = null
     revealArmed = false
     frozenGrid = null
     revealTime.value = PIXEL_REVEAL_CONFIG.duration
-    group?.children.forEach(object => {
-      if (!(object instanceof THREE.InstancedMesh)) return
-      const materials = Array.isArray(object.material) ? object.material : [object.material]
-      materials.forEach(material => { if (material.transparent) { material.transparent = false; material.needsUpdate = true } })
-    })
     publishRevealTime()
-    scheduleRefresh()
+    if (immediate) void refreshNow().catch(error => options.onError(error.message))
+    else scheduleRefresh()
   }
 
   function startReveal() {
@@ -400,19 +370,11 @@ export function usePixelMapLayer(options: PixelMapOptions) {
   }
 
   function identify(event: { coordinate: maptalks.Coordinate; containerPoint?: maptalks.Point }) {
-    if (!active || !map || !layer || !group || !options.getRegionsVisible()) return null
+    if (!active || !map || !deck || !options.getRegionsVisible()) return null
     const point = event.containerPoint ?? map.coordToContainerPoint(event.coordinate)
-    const size = map.getSize()
-    pointer.set(point.x / size.width * 2 - 1, 1 - point.y / size.height * 2)
-    group.updateMatrixWorld(true)
-    raycaster.setFromCamera(pointer, layer.getCamera())
-    const hit = raycaster.intersectObjects([...batches.values()], false)[0]
-    if (hit && typeof hit.instanceId === 'number' && hit.object instanceof THREE.InstancedMesh) {
-      const start = hit.object.geometry.getAttribute('pixelRevealStart')?.getX(hit.instanceId) ?? 0
-      if (getPixelRevealAmount(revealTime.value, start) <= 0.001) return null
-    }
-    const feature = hit?.object.userData.feature as ProtectAreaFeature | undefined
-    return feature && options.getVisibleTypes().includes(feature.properties.BHDLX) ? feature : null
+    const cell = deck.pickObject({ x: point.x, y: point.y, layerIds: ['pixel-1'] })?.object as PixelCell | undefined
+    if (!cell || getPixelRevealAmount(revealTime.value, cell.start) <= 0.001) return null
+    return cell.feature && options.getVisibleTypes().includes(cell.feature.properties.BHDLX) ? cell.feature : null
   }
 
   function handleClick(event: { coordinate: maptalks.Coordinate; containerPoint?: maptalks.Point }) {
@@ -427,7 +389,7 @@ export function usePixelMapLayer(options: PixelMapOptions) {
     const feature = identify(event)
     if (feature) finishReveal()
     // A single cell acts as a locator until zooming reveals the area's shape.
-    if (feature && batches.get(feature.id)?.count === 1) {
+    if (feature && cellCounts.get(feature.id) === 1) {
       const site = SITE_BY_ID.get(feature.properties.BHDBM)
       if (site) {
         clearHover()
@@ -460,15 +422,18 @@ export function usePixelMapLayer(options: PixelMapOptions) {
     finishInitialization?.()
     worker?.terminate()
     worker = null
-    map?.off('moving zooming moveend zoomend resize rotateend pitchend', scheduleRefresh)
-    map?.off('pitching pitchend', syncPitch)
+    map?.off(VIEW_EVENTS, handleGridViewChange)
+    map?.off(VIEW_EVENTS, syncView)
     map?.off('mousemove', handleHover)
     options.container.value?.removeEventListener('pointerleave', clearHover)
-    releaseGroup()
+    cells = [[], []]
+    cellCounts.clear()
     markers?.remove()
-    layer?.remove()
+    deck?.finalize()
+    canvas?.remove()
     map = null
-    layer = null
+    deck = null
+    canvas = null
   }
 
   return { prepare, setActive, refreshNow, syncSelection, handleClick, setFlightActive, startReveal, finishReveal, dispose,
